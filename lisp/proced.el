@@ -152,7 +152,7 @@ the external command (usually \"kill\")."
     (pri     "Pr"      "%d" right proced-< t (pri pid) (nil t t))
     (nice    "Ni"      "%3d" 3 proced-< t (nice pid) (t t nil))
     (thcount "THCount" "%d" right proced-< t (thcount pid) (nil t t))
-    (start   "Start"   proced-format-start 6 proced-time-lessp nil (start pid)
+    (start   "Start"   proced-format-start left proced-time-lessp nil (start pid)
                        (t t nil))
     (vsize   "VSize"   proced-format-memory right proced-< t (vsize pid)
                        (nil t t))
@@ -656,6 +656,14 @@ Important: the match ends just after the marker.")
   )
 (put 'proced-mark :advertised-binding "m")
 
+(defvar-local proced-refinements nil
+  "Information about the current buffer refinements.
+
+It should be a list of elements of the form (REFINER PID KEY GRAMMAR), where
+REFINER and GRAMMAR are as described in `proced-grammar-alist', PID is the
+process ID of the process used to create the refinement, and KEY the attribute
+of the process.  A value of nil indicates that there are no active refinements.")
+
 (easy-menu-define proced-menu proced-mode-map
   "Proced Menu."
   `("Proced"
@@ -768,12 +776,12 @@ Important: the match ends just after the marker.")
 	(while (string-match "[ \t\n]+" hl pos)
 	  (setq pos (match-end 0))
 	  (put-text-property (match-beginning 0) pos 'display
-			     `(space :align-to ,(+ pos base))
+			     `(space :align-to (,(+ pos base) . width))
 			     hl)))
       (setq hl (replace-regexp-in-string ;; preserve text properties
 		"\\(%\\)" "\\1\\1"
 		hl)))
-    (list (propertize " " 'display `(space :align-to ,base))
+    (list (propertize " " 'display `(space :align-to (,base . width)))
           hl)))
 
 (defun proced-pid-at-point ()
@@ -783,6 +791,52 @@ Return nil if point is not on a process line."
     (beginning-of-line)
     (if (looking-at "^. .")
         (get-text-property (match-end 0) 'proced-pid))))
+
+(defun proced--position-info (pos)
+  "Return information of the process at POS.
+
+The returned information will have the form `(PID KEY COLUMN)' where
+PID is the process ID of the process at point, KEY is the value of the
+proced-key text property at point, and COLUMN is the column for which the
+current value of the proced-key text property starts, or 0 if KEY is nil."
+  ;; If point is on a field, we try to return point to that field.
+  ;; Otherwise we try to return to the same column
+  (save-excursion
+    (goto-char pos)
+    (let ((pid (proced-pid-at-point))
+          (key (get-text-property (point) 'proced-key)))
+      (list pid key ; can both be nil
+            (if key
+                (if (get-text-property (1- (point)) 'proced-key)
+                    (- (point) (previous-single-property-change
+                                (point) 'proced-key))
+                  0)
+              (current-column))))))
+
+(defun proced--determine-pos (key column)
+  "Return position of point in the current line using KEY and COLUMN.
+
+Attempt to find the first position on the current line where the
+text property proced-key is equal to KEY.  If this is not possible, return
+the position of point of column COLUMN on the current line."
+  (save-excursion
+    (let (new-pos)
+      (if key
+          (let ((limit (line-end-position)) pos)
+            (while (and (not new-pos)
+                        (setq pos (next-property-change (point) nil limit)))
+              (goto-char pos)
+              (when (eq key (get-text-property (point) 'proced-key))
+                (forward-char (min column (- (next-property-change (point))
+                                             (point))))
+                (setq new-pos (point))))
+            (unless new-pos
+              ;; we found the process, but the field of point
+              ;; is not listed anymore
+              (setq new-pos (proced-move-to-goal-column))))
+        (setq new-pos (min (+ (line-beginning-position) column)
+                           (line-end-position))))
+      new-pos)))
 
 ;; proced mode
 
@@ -839,6 +893,9 @@ normal hook `proced-post-display-hook'.
   (setq-local revert-buffer-function #'proced-revert)
   (setq-local font-lock-defaults
               '(proced-font-lock-keywords t nil nil beginning-of-line))
+  (setq-local switch-to-buffer-preserve-window-point nil)
+  ;; So that the heading scales together with the body of the table.
+  (setq-local text-scale-remap-header-line t)
   (if (and (not proced-auto-update-timer) proced-auto-update-interval)
       (setq proced-auto-update-timer
             (run-at-time t proced-auto-update-interval
@@ -1337,20 +1394,7 @@ a certain refinement, consider defining a new filter in `proced-filter-alist'."
         (let* ((grammar (assq key proced-grammar-alist))
                (refiner (nth 7 grammar)))
           (when refiner
-            (cond ((functionp (car refiner))
-                   (setq proced-process-alist (funcall (car refiner) pid)))
-                  ((consp refiner)
-                   (let ((predicate (nth 4 grammar))
-                         (ref (cdr (assq key (cdr (assq pid proced-process-alist)))))
-                         val new-alist)
-                     (dolist (process proced-process-alist)
-                       (setq val (funcall predicate (cdr (assq key (cdr process))) ref))
-                       (if (cond ((not val) (nth 2 refiner))
-                                 ((eq val 'equal) (nth 1 refiner))
-                                 (val (car refiner)))
-                           (push process new-alist)))
-                     (setq proced-process-alist new-alist))))
-            ;; Do not revert listing.
+            (add-to-list 'proced-refinements (list refiner pid key grammar) t)
             (proced-update)))
       (message "No refiner defined here."))))
 
@@ -1555,8 +1599,7 @@ Prefix ARG controls sort order, see `proced-sort-interactive'."
            (format "%02d%s%02d" minutes colon seconds)))))
 
 (defun proced-format-start (start)
-  "Format time START.
-The return string is always 6 characters wide."
+  "Format time START."
   (let ((d-start (decode-time start))
         (d-current (decode-time))
         (colon (if proced-enable-color-flag
@@ -1859,10 +1902,29 @@ After updating a displayed Proced buffer run the normal hook
                        "Updating process display...")))
   (if revert ;; evaluate all processes
       (setq proced-process-alist (proced-process-attributes)))
-  ;; filtering and sorting
+  ;; filtering
+  (setq proced-process-alist (proced-filter proced-process-alist proced-filter))
+  ;; refinements
+  (pcase-dolist (`(,refiner ,pid ,key ,grammar) proced-refinements)
+    ;; It's possible the process has exited since the refinement was made
+    (when (assq pid proced-process-alist)
+      (cond ((functionp (car refiner))
+             (setq proced-process-alist (funcall (car refiner) pid)))
+            ((consp refiner)
+             (let ((predicate (nth 4 grammar))
+                   (ref (cdr (assq key (cdr (assq pid proced-process-alist)))))
+                   val new-alist)
+               (dolist (process proced-process-alist)
+                 (setq val (funcall predicate (cdr (assq key (cdr process))) ref))
+                 (when (cond ((not val) (nth 2 refiner))
+                             ((eq val 'equal) (nth 1 refiner))
+                             (val (car refiner)))
+                   (push process new-alist)))
+               (setq proced-process-alist new-alist))))))
+
+  ;; sorting
   (setq proced-process-alist
-        (proced-sort (proced-filter proced-process-alist proced-filter)
-                     proced-sort proced-descend))
+        (proced-sort proced-process-alist proced-sort proced-descend))
 
   ;; display as process tree?
   (setq proced-process-alist
@@ -1875,17 +1937,10 @@ After updating a displayed Proced buffer run the normal hook
   (if (consp buffer-undo-list)
       (setq buffer-undo-list nil))
   (let ((buffer-undo-list t)
-        ;; If point is on a field, we try to return point to that field.
-        ;; Otherwise we try to return to the same column
-        (old-pos (let ((pid (proced-pid-at-point))
-                       (key (get-text-property (point) 'proced-key)))
-                   (list pid key ; can both be nil
-                         (if key
-                             (if (get-text-property (1- (point)) 'proced-key)
-                                 (- (point) (previous-single-property-change
-                                             (point) 'proced-key))
-                               0)
-                           (current-column)))))
+        (window-pos-infos
+         (mapcar (lambda (w) `(,w . ,(proced--position-info (window-point w))))
+                 (get-buffer-window-list (current-buffer) nil t)))
+        (old-pos (proced--position-info (point)))
         buffer-read-only mp-list)
     ;; remember marked processes (whatever the mark was)
     (goto-char (point-min))
@@ -1918,7 +1973,8 @@ After updating a displayed Proced buffer run the normal hook
     ;; Sometimes this puts point in the middle of the proced buffer
     ;; where it is not interesting.  Is there a better / more flexible solution?
     (goto-char (point-min))
-    (let (pid mark new-pos)
+
+    (let (pid mark new-pos win-points)
       (if (or mp-list (car old-pos))
           (while (not (eobp))
             (setq pid (proced-pid-at-point))
@@ -1927,28 +1983,25 @@ After updating a displayed Proced buffer run the normal hook
               (delete-char 1)
               (beginning-of-line))
             (when (eq (car old-pos) pid)
-              (if (nth 1 old-pos)
-                  (let ((limit (line-end-position)) pos)
-                    (while (and (not new-pos)
-                                (setq pos (next-property-change (point) nil limit)))
-                      (goto-char pos)
-                      (when (eq (nth 1 old-pos)
-                                (get-text-property (point) 'proced-key))
-                        (forward-char (min (nth 2 old-pos)
-                                           (- (next-property-change (point))
-                                              (point))))
-                        (setq new-pos (point))))
-                    (unless new-pos
-                      ;; we found the process, but the field of point
-                      ;; is not listed anymore
-                      (setq new-pos (proced-move-to-goal-column))))
-                (setq new-pos (min (+ (line-beginning-position) (nth 2 old-pos))
-                                   (line-end-position)))))
+              (setq new-pos (proced--determine-pos (nth 1 old-pos)
+                                                   (nth 2 old-pos))))
+            (mapc (lambda (w-pos)
+                    (when (eq (cadr w-pos) pid)
+                      (push `(,(car w-pos) . ,(proced--determine-pos
+                                               (nth 1 (cdr w-pos))
+                                               (nth 2 (cdr w-pos))))
+                            win-points)))
+                  window-pos-infos)
             (forward-line)))
-      (if new-pos
-          (goto-char new-pos)
-        (goto-char (point-min))
-        (proced-move-to-goal-column)))
+      (let ((fallback (save-excursion (goto-char (point-min))
+                                      (proced-move-to-goal-column)
+                                      (point))))
+        (goto-char (or new-pos fallback))
+        ;; Update window points
+        (mapc (lambda (w-pos)
+                (set-window-point (car w-pos)
+                                  (alist-get (car w-pos) win-points fallback)))
+              window-pos-infos)))
     ;; update mode line
     ;; Does the long `mode-name' clutter the mode line?  It would be nice
     ;; to have some other location for displaying the values of the various
@@ -1976,7 +2029,9 @@ After updating a displayed Proced buffer run the normal hook
 
 (defun proced-revert (&rest _args)
   "Reevaluate the process listing based on the currently running processes.
-Preserves point and marks."
+Preserves point and marks, but not refinements (see `proced-refine' for
+information on refinements)."
+  (setq proced-refinements nil)
   (proced-update t))
 
 (defun proced-marked-processes ()

@@ -2021,7 +2021,7 @@ other modes.  See `override-global-mode'.
 (fn &rest ARGS)" nil t)
 (autoload 'describe-personal-keybindings "bind-key" "\
 Display all the personal keybindings defined by `bind-key'." t)
-(register-definition-prefixes "bind-key" '("bind-key" "compare-keybindings" "get-binding-description" "override-global-m" "personal-keybindings"))
+(register-definition-prefixes "bind-key" '("bind-key" "override-global-m" "personal-keybindings"))
 
 
 ;;; Generated autoloads from emacs-lisp/bindat.el
@@ -2785,7 +2785,7 @@ it is disabled.
 
 ;;; Generated autoloads from emacs-lisp/byte-opt.el
 
-(register-definition-prefixes "byte-opt" '("byte-" "disassemble-offset"))
+(register-definition-prefixes "byte-opt" '("byte" "disassemble-offset"))
 
 
 ;;; Generated autoloads from emacs-lisp/bytecomp.el
@@ -4929,6 +4929,16 @@ The variable `native-comp-async-jobs-number' specifies the number
 of (commands) to run simultaneously.
 
 (fn FILES &optional RECURSIVELY LOAD SELECTOR)")
+(autoload 'comp-function-type-spec "comp" "\
+Return the type specifier of FUNCTION.
+
+This function returns a cons cell whose car is the function
+specifier, and cdr is a symbol, either `inferred' or `know'.
+If the symbol is `inferred', the type specifier is automatically
+inferred from the code itself by the native compiler; if it is
+`know', the type specifier comes from `comp-known-type-specifiers'.
+
+(fn FUNCTION)")
 (register-definition-prefixes "comp" '("comp-" "make-comp-edge" "native-" "no-native-compile"))
 
 
@@ -5138,8 +5148,6 @@ evaluate `compilation-shell-minor-mode'.
 The mode's hook is called both when the mode is enabled and when
 it is disabled.
 
-\\{compilation-shell-minor-mode-map}
-
 (fn &optional ARG)" t)
 (autoload 'compilation-minor-mode "compile" "\
 Toggle Compilation minor mode.
@@ -5162,8 +5170,6 @@ evaluate `compilation-minor-mode'.
 
 The mode's hook is called both when the mode is enabled and when
 it is disabled.
-
-\\{compilation-minor-mode-map}
 
 (fn &optional ARG)" t)
 (autoload 'compilation-next-error-function "compile" "\
@@ -7288,7 +7294,7 @@ the context menu will contain an item that searches
 the word at mouse click.
 
 (fn MENU CLICK)")
-(register-definition-prefixes "dictionary" '("dictionary-" "global-dictionary-tooltip-mode"))
+(register-definition-prefixes "dictionary" '("dictionary-" "global-dictionary-tooltip-mode" "help-word"))
 
 
 ;;; Generated autoloads from cedet/srecode/dictionary.el
@@ -8248,17 +8254,14 @@ TURN-ON is a function that will be called with no args in every buffer
 and that should try to turn MODE on if applicable for that buffer.
 
 Each of KEY VALUE is a pair of CL-style keyword arguments.
-The :predicate key specifies in which major modes should the
+The :predicate argument specifies in which major modes should the
 globalized minor mode be switched on.  The value should be t (meaning
 switch on the minor mode in all major modes), nil (meaning don't
 switch on in any major mode), a list of modes (meaning switch on only
 in those modes and their descendants), or a list (not MODES...),
 meaning switch on in any major mode except MODES.  The value can also
 mix all of these forms, see the info node `Defining Minor Modes' for
-details.  The :predicate key causes the macro to create a user option
-named the same as MODE, but ending with \"-modes\" instead of \"-mode\".
-That user option can then be used to customize in which modes this
-globalized minor mode will be switched on.
+details.
 As the minor mode defined by this function is always global, any
 :global keyword is ignored.
 Other keywords have the same meaning as in `define-minor-mode',
@@ -8303,6 +8306,7 @@ Valid keywords and arguments are:
              `nodigits' to suppress digits as prefix arguments.
 
 (fn BS &optional NAME M ARGS)")
+(make-obsolete 'easy-mmode-define-keymap 'define-keymap "29.1")
 (autoload 'easy-mmode-defmap "easy-mmode" "\
 Define a constant M whose value is the result of `easy-mmode-define-keymap'.
 The M, BS, and ARGS arguments are as per that function.  DOC is
@@ -8313,6 +8317,7 @@ This macro is deprecated; use `defvar-keymap' instead.
 (fn M BS DOC &rest ARGS)" nil t)
 (function-put 'easy-mmode-defmap 'doc-string-elt 3)
 (function-put 'easy-mmode-defmap 'lisp-indent-function 1)
+(make-obsolete 'easy-mmode-defmap 'defvar-keymap "29.1")
 (autoload 'easy-mmode-defsyntax "easy-mmode" "\
 Define variable ST as a syntax-table.
 CSS contains a list of syntax specifications of the form (CHAR . SYNTAX).
@@ -8628,7 +8633,7 @@ A second call of this function without changing point inserts the next match.
 A call with prefix PREFIX reads the symbol to insert from the minibuffer with
 completion.
 
-(fn PREFIX)" t)
+(fn PREFIX)" '("P"))
 (autoload 'ebrowse-tags-loop-continue "ebrowse" "\
 Repeat last operation on files in tree.
 FIRST-TIME non-nil means this is not a repetition, but the first time.
@@ -9240,24 +9245,25 @@ Turn on EDT Emulation." t)
 
 ;;; Generated autoloads from progmodes/eglot.el
 
-(push (purecopy '(eglot 1 12 29)) package--builtin-versions)
+(push (purecopy '(eglot 1 15)) package--builtin-versions)
 (autoload 'eglot "eglot" "\
-Start LSP server in support of PROJECT's buffers under MANAGED-MAJOR-MODE.
+Start LSP server for PROJECT's buffers under MANAGED-MAJOR-MODES.
 
-This starts a Language Server Protocol (LSP) server suitable for the
-buffers of PROJECT whose `major-mode' is MANAGED-MAJOR-MODE.
-CLASS is the class of the LSP server to start and CONTACT specifies
-how to connect to the server.
+This starts a Language Server Protocol (LSP) server suitable for
+the buffers of PROJECT whose `major-mode' is among
+MANAGED-MAJOR-MODES.  CLASS is the class of the LSP server to
+start and CONTACT specifies how to connect to the server.
 
-Interactively, the command attempts to guess MANAGED-MAJOR-MODE
-from the current buffer's `major-mode', CLASS and CONTACT from
-`eglot-server-programs' looked up by the major mode, and PROJECT from
-`project-find-functions'.  The search for active projects in this
-context binds `eglot-lsp-context' (which see).
+Interactively, the command attempts to guess MANAGED-MAJOR-MODES,
+CLASS, CONTACT, and LANGUAGE-IDS from `eglot-server-programs',
+according to the current buffer's `major-mode'.  PROJECT is
+guessed from `project-find-functions'.  The search for active
+projects in this context binds `eglot-lsp-context' (which see).
 
-If it can't guess, it prompts the user for the mode and the server.
-With a single \\[universal-argument] prefix arg, it always prompts for COMMAND.
-With two \\[universal-argument], it also always prompts for MANAGED-MAJOR-MODE.
+If it can't guess, it prompts the user for the mode and the
+server.  With a single \\[universal-argument] prefix arg, it
+always prompts for COMMAND.  With two \\[universal-argument], it
+also always prompts for MANAGED-MAJOR-MODE.
 
 The LSP server of CLASS is started (or contacted) via CONTACT.
 If this operation is successful, current *and future* file
@@ -9275,12 +9281,12 @@ CONTACT specifies how to contact the server.  It is a
 keyword-value plist used to initialize CLASS or a plain list as
 described in `eglot-server-programs', which see.
 
-LANGUAGE-ID is the language ID string to send to the server for
-MANAGED-MAJOR-MODE, which matters to a minority of servers.
+LANGUAGE-IDS is a list of language ID string to send to the
+server for each element in MANAGED-MAJOR-MODES.
 
 INTERACTIVE is ignored and provided for backward compatibility.
 
-(fn MANAGED-MAJOR-MODE PROJECT CLASS CONTACT LANGUAGE-ID &optional INTERACTIVE)" t)
+(fn MANAGED-MAJOR-MODES PROJECT CLASS CONTACT LANGUAGE-IDS &optional INTERACTIVE)" t)
 (autoload 'eglot-ensure "eglot" "\
 Start Eglot session for current buffer if there isn't one.")
 (autoload 'eglot-upgrade-eglot "eglot" "\
@@ -9415,7 +9421,7 @@ Describe CTR if it is a class constructor.
 
 ;;; Generated autoloads from emacs-lisp/eldoc.el
 
-(push (purecopy '(eldoc 1 13 0)) package--builtin-versions)
+(push (purecopy '(eldoc 1 14 0)) package--builtin-versions)
 
 
 ;;; Generated autoloads from elec-pair.el
@@ -9542,6 +9548,15 @@ optional prefix argument REINIT is non-nil.
 (register-definition-prefixes "elint" '("elint-"))
 
 
+;;; Generated autoloads from progmodes/elixir-ts-mode.el
+
+(autoload 'elixir-ts-mode "elixir-ts-mode" "\
+Major mode for editing Elixir, powered by tree-sitter.
+
+(fn)" t)
+(register-definition-prefixes "elixir-ts-mode" '("elixir-ts-"))
+
+
 ;;; Generated autoloads from emacs-lisp/elp.el
 
 (autoload 'elp-instrument-function "elp" "\
@@ -9608,6 +9623,16 @@ displayed." t)
 
 ;;; Generated autoloads from eshell/em-extpipe.el
 
+(defgroup eshell-extpipe nil "\
+Native shell pipelines.
+
+This module lets you construct pipelines that use your operating
+system's shell instead of Eshell's own pipelining support.  This
+is especially relevant when executing commands on a remote
+machine using Eshell's Tramp integration: using the remote
+shell's pipelining avoids copying the data which will flow
+through the pipeline to local Emacs buffers and then right back
+again." :tag "External pipelines" :group 'eshell-module)
 (register-definition-prefixes "em-extpipe" '("eshell-"))
 
 
@@ -9618,12 +9643,12 @@ displayed." t)
 
 ;;; Generated autoloads from eshell/em-hist.el
 
-(register-definition-prefixes "em-hist" '("eshell"))
+(register-definition-prefixes "em-hist" '("em-hist-unload-function" "eshell"))
 
 
 ;;; Generated autoloads from eshell/em-ls.el
 
-(register-definition-prefixes "em-ls" '("eshell"))
+(register-definition-prefixes "em-ls" '("em-ls-unload-function" "eshell"))
 
 
 ;;; Generated autoloads from eshell/em-pred.el
@@ -9648,7 +9673,7 @@ displayed." t)
 
 ;;; Generated autoloads from eshell/em-smart.el
 
-(register-definition-prefixes "em-smart" '("eshell-"))
+(register-definition-prefixes "em-smart" '("em-smart-unload-hook" "eshell-"))
 
 
 ;;; Generated autoloads from eshell/em-term.el
@@ -9796,15 +9821,9 @@ Emerge two RCS revisions of a file, with another revision as ancestor.
 
 ;;; Generated autoloads from international/emoji.el
 
-(autoload 'emoji-insert "emoji" "\
-Choose and insert an emoji glyph." t)
-(autoload 'emoji-recent "emoji" "\
-Choose and insert one of the recently-used emoji glyphs." t)
-(autoload 'emoji-search "emoji" "\
-Choose and insert an emoji glyph by typing its Unicode name.
-This command prompts for an emoji name, with completion, and
-inserts it.  It recognizes the Unicode Standard names of emoji,
-and also consults the `emoji-alternate-names' alist." t)
+ (autoload 'emoji-insert "emoji" nil t)
+ (autoload 'emoji-recent "emoji" nil t)
+ (autoload 'emoji-search "emoji" nil t)
 (autoload 'emoji-list "emoji" "\
 List emojis and insert the one that's selected.
 Select the emoji by typing \\<emoji-list-mode-map>\\[emoji-list-select] on its picture.
@@ -9820,6 +9839,7 @@ If called from Lisp, return the name as a string; return nil if
 the name is not known.
 
 (fn GLYPH &optional INTERACTIVE)" t)
+ (autoload 'emoji-list-select "emoji" nil t)
 (autoload 'emoji--init "emoji" "\
 
 
@@ -10210,9 +10230,10 @@ Look at CONFIG and try to expand GROUP.
 
 ;;; Generated autoloads from erc/erc.el
 
-(push (purecopy '(erc 5 5 0 29 1)) package--builtin-versions)
+(push (purecopy '(erc 5 6 -4)) package--builtin-versions)
 (autoload 'erc-select-read-args "erc" "\
-Prompt the user for values of nick, server, port, and password.")
+Prompt the user for values of nick, server, port, and password.
+With prefix arg, also prompt for user and full name.")
 (autoload 'erc "erc" "\
 ERC is a powerful, modular, and extensible IRC client.
 This function is the main entry point for ERC.
@@ -10238,7 +10259,7 @@ for the values of the other parameters.
 
 See `erc-tls' for the meaning of ID.
 
-(fn &key (SERVER (erc-compute-server)) (PORT (erc-compute-port)) (NICK (erc-compute-nick)) (USER (erc-compute-user)) PASSWORD (FULL-NAME (erc-compute-full-name)) ID)" t)
+(fn &key SERVER PORT NICK USER PASSWORD FULL-NAME ID)" '((erc-select-read-args)))
 (defalias 'erc-select #'erc)
 (autoload 'erc-tls "erc" "\
 ERC is a powerful, modular, and extensible IRC client.
@@ -10282,11 +10303,11 @@ Example usage:
 
 When present, ID should be a symbol or a string to use for naming
 the server buffer and identifying the connection unequivocally.
-See Info node `(erc) Network Identifier' for details.  Like USER
-and CLIENT-CERTIFICATE, this parameter cannot be specified
+See Info node `(erc) Network Identifier' for details.  Like
+CLIENT-CERTIFICATE, this parameter cannot be specified
 interactively.
 
-(fn &key (SERVER (erc-compute-server)) (PORT (erc-compute-port \\='ircs-u)) (NICK (erc-compute-nick)) (USER (erc-compute-user)) PASSWORD (FULL-NAME (erc-compute-full-name)) CLIENT-CERTIFICATE ID)" t)
+(fn &key SERVER PORT NICK USER PASSWORD FULL-NAME CLIENT-CERTIFICATE ID)" '((let ((erc-default-port erc-default-port-tls)) (erc-select-read-args))))
 (autoload 'erc-handle-irc-url "erc" "\
 Use ERC to IRC on HOST:PORT in CHANNEL.
 If ERC is already connected to HOST:PORT, simply /join CHANNEL.
@@ -10366,7 +10387,7 @@ Customize `erc-url-connect-function' to override this.
 
 ;;; Generated autoloads from erc/erc-imenu.el
 
-(register-definition-prefixes "erc-imenu" '("erc-unfill-notice"))
+(register-definition-prefixes "erc-imenu" '("erc-"))
 
 
 ;;; Generated autoloads from erc/erc-join.el
@@ -10515,9 +10536,7 @@ it has to be wrapped in `(eval (quote ...))'.
 If NAME is already defined as a test and Emacs is running
 in batch mode, an error is signaled.
 
-(fn NAME () [DOCSTRING] [:expected-result RESULT-TYPE] [:tags \\='(TAG...)] BODY...)" nil t)
-(function-put 'ert-deftest 'doc-string-elt 3)
-(function-put 'ert-deftest 'lisp-indent-function 2)
+(fn NAME () [DOCSTRING] [:expected-result RESULT-TYPE] [:tags \\='(TAG...)] BODY...)" nil 'macro)
 (autoload 'ert-run-tests-batch "ert" "\
 Run the tests specified by SELECTOR, printing results to the terminal.
 
@@ -10652,9 +10671,10 @@ information on Eshell, see Info node `(eshell)Top'.
 (fn &optional ARG)" t)
 (autoload 'eshell-command "eshell" "\
 Execute the Eshell command string COMMAND.
-With prefix ARG, insert output into the current buffer at point.
+If TO-CURRENT-BUFFER is non-nil (interactively, with the prefix
+argument), then insert output into the current buffer at point.
 
-(fn &optional COMMAND ARG)" t)
+(fn COMMAND &optional TO-CURRENT-BUFFER)" t)
 (autoload 'eshell-command-result "eshell" "\
 Execute the given Eshell COMMAND, and return the result.
 The result might be any Lisp object.
@@ -11341,7 +11361,7 @@ fourth arg NOSEP non-nil inhibits this.
 
 ;;; Generated autoloads from net/eww.el
 
-(defvar eww-suggest-uris '(eww-links-at-point thing-at-point-url-at-point eww-current-url) "\
+(defvar eww-suggest-uris '(eww-links-at-point thing-at-point-url-at-point eww-current-url eww-bookmark-urls) "\
 List of functions called to form the list of default URIs for `eww'.
 Each of the elements is a function returning either a string or a list
 of strings.  The results will be joined into a single list with
@@ -11378,8 +11398,10 @@ For more information, see Info node `(eww) Top'.
  (defalias 'browse-web 'eww)
 (autoload 'eww-open-file "eww" "\
 Render FILE using EWW.
+If NEW-BUFFER is non-nil (interactively, the prefix arg), use a
+new buffer instead of reusing the default EWW buffer.
 
-(fn FILE)" t)
+(fn FILE &optional NEW-BUFFER)" t)
 (autoload 'eww-search-words "eww" "\
 Search the web for the text in the region.
 If region is active (and not whitespace), search the web for
@@ -12621,7 +12643,7 @@ lines.
 
 ;;; Generated autoloads from progmodes/flymake.el
 
-(push (purecopy '(flymake 1 2 2)) package--builtin-versions)
+(push (purecopy '(flymake 1 3 4)) package--builtin-versions)
 (autoload 'flymake-log "flymake" "\
 Log, at level LEVEL, the message MSG formatted with ARGS.
 LEVEL is passed to `display-warning', which is used to display
@@ -12719,8 +12741,6 @@ evaluate `flymake-mode'.
 
 The mode's hook is called both when the mode is enabled and when
 it is disabled.
-
-\\{flymake-mode-map}
 
 (fn &optional ARG)" t)
 (autoload 'flymake-mode-on "flymake" "\
@@ -14465,6 +14485,8 @@ Add the window configuration CONF to `gnus-buffer-configuration'.
 (autoload 'go-ts-mode "go-ts-mode" "\
 Major mode for editing Go, powered by tree-sitter.
 
+\\{go-ts-mode-map}
+
 (fn)" t)
 (autoload 'go-mod-ts-mode "go-ts-mode" "\
 Major mode for editing go.mod files, powered by tree-sitter.
@@ -14808,8 +14830,9 @@ to specify a command to run.
 If CONFIRM is non-nil, the user will be given an opportunity to edit the
 command before it's run.
 
-Interactively, the user can use \\<read-regexp-map>\\[read-regexp-toggle-case-fold] while entering the regexp
-to indicate whether the grep should be case sensitive or not.
+Interactively, the user can use the \\`M-c' command while entering
+the regexp to indicate whether the grep should be case sensitive
+or not.
 
 (fn REGEXP &optional FILES DIR CONFIRM)" t)
 (autoload 'zrgrep "grep" "\
@@ -15124,6 +15147,15 @@ Prefix arg sets default accept amount temporarily.
 
 (fn &optional ARG)" t)
 (register-definition-prefixes "hashcash" '("hashcash-"))
+
+
+;;; Generated autoloads from progmodes/heex-ts-mode.el
+
+(autoload 'heex-ts-mode "heex-ts-mode" "\
+Major mode for editing HEEx, powered by tree-sitter.
+
+(fn)" t)
+(register-definition-prefixes "heex-ts-mode" '("heex-ts-"))
 
 
 ;;; Generated autoloads from help-at-pt.el
@@ -16296,6 +16328,15 @@ values.
 (register-definition-prefixes "semantic/html" '("semantic-"))
 
 
+;;; Generated autoloads from textmodes/html-ts-mode.el
+
+(autoload 'html-ts-mode "html-ts-mode" "\
+Major mode for editing Html, powered by tree-sitter.
+
+(fn)" t)
+(register-definition-prefixes "html-ts-mode" '("html-ts-mode-"))
+
+
 ;;; Generated autoloads from htmlfontify.el
 
 (push (purecopy '(htmlfontify 0 21)) package--builtin-versions)
@@ -16368,8 +16409,7 @@ inlined into the compiled format versions.  This means that if you
 change its definition, you should explicitly call
 `ibuffer-recompile-formats'.
 
-(fn SYMBOL (&key NAME INLINE PROPS SUMMARIZER) &rest BODY)" nil t)
-(function-put 'define-ibuffer-column 'lisp-indent-function 'defun)
+(fn SYMBOL (&key NAME INLINE PROPS SUMMARIZER) &rest BODY)" nil 'macro)
 (autoload 'define-ibuffer-sorter "ibuf-macs" "\
 Define a method of sorting named NAME.
 DOCUMENTATION is the documentation of the function, which will be called
@@ -16380,9 +16420,7 @@ For sorting, the forms in BODY will be evaluated with `a' bound to one
 buffer object, and `b' bound to another.  BODY should return a non-nil
 value if and only if `a' is \"less than\" `b'.
 
-(fn NAME DOCUMENTATION (&key DESCRIPTION) &rest BODY)" nil t)
-(function-put 'define-ibuffer-sorter 'lisp-indent-function 1)
-(function-put 'define-ibuffer-sorter 'doc-string-elt 2)
+(fn NAME DOCUMENTATION (&key DESCRIPTION) &rest BODY)" nil 'macro)
 (autoload 'define-ibuffer-op "ibuf-macs" "\
 Generate a function which operates on a buffer.
 OP becomes the name of the function; if it doesn't begin with
@@ -16421,9 +16459,7 @@ BODY define the operation; they are forms to evaluate per each
 marked buffer.  BODY is evaluated with `buf' bound to the
 buffer object.
 
-(fn OP ARGS DOCUMENTATION (&key INTERACTIVE MARK MODIFIER-P DANGEROUS OPSTRING ACTIVE-OPSTRING BEFORE AFTER COMPLEX) &rest BODY)" nil t)
-(function-put 'define-ibuffer-op 'lisp-indent-function 2)
-(function-put 'define-ibuffer-op 'doc-string-elt 3)
+(fn OP ARGS DOCUMENTATION (&key INTERACTIVE MARK MODIFIER-P DANGEROUS OPSTRING ACTIVE-OPSTRING BEFORE AFTER COMPLEX) &rest BODY)" nil 'macro)
 (autoload 'define-ibuffer-filter "ibuf-macs" "\
 Define a filter named NAME.
 DOCUMENTATION is the documentation of the function.
@@ -16438,9 +16474,7 @@ not a particular buffer should be displayed or not.  The forms in BODY
 will be evaluated with BUF bound to the buffer object, and QUALIFIER
 bound to the current value of the filter.
 
-(fn NAME DOCUMENTATION (&key READER DESCRIPTION) &rest BODY)" nil t)
-(function-put 'define-ibuffer-filter 'lisp-indent-function 2)
-(function-put 'define-ibuffer-filter 'doc-string-elt 2)
+(fn NAME DOCUMENTATION (&key READER DESCRIPTION) &rest BODY)" nil 'macro)
 (register-definition-prefixes "ibuf-macs" '("ibuffer-"))
 
 
@@ -18784,7 +18818,7 @@ Major mode for editing JSON, powered by tree-sitter.
 
 ;;; Generated autoloads from jsonrpc.el
 
-(push (purecopy '(jsonrpc 1 0 16)) package--builtin-versions)
+(push (purecopy '(jsonrpc 1 0 17)) package--builtin-versions)
 (register-definition-prefixes "jsonrpc" '("jsonrpc-"))
 
 
@@ -19496,7 +19530,7 @@ If called with an optional prefix argument ARG, prompts for month and year.
 This function is suitable for execution in an init file.
 
 (fn &optional ARG)" t)
-(register-definition-prefixes "lunar" '("calendar-lunar-phases" "diary-lunar-phases" "eclipse-check" "lunar-"))
+(register-definition-prefixes "lunar" '("calendar-lunar-phases" "diary-lunar-phases" "lunar-"))
 
 
 ;;; Generated autoloads from progmodes/m4-mode.el
@@ -19589,7 +19623,7 @@ and then select the region of un-tablified names and use
 
 (fn TOP BOTTOM &optional MACRO)" t)
  (define-key ctl-x-map "q" 'kbd-macro-query)
-(register-definition-prefixes "macros" '("macro"))
+(register-definition-prefixes "macros" '("macros--insert-vector-macro"))
 
 
 ;;; Generated autoloads from mail/mail-extr.el
@@ -20672,8 +20706,6 @@ Also see the `duplicate-line' command.
 (autoload 'duplicate-line "misc" "\
 Duplicate the current line N times.
 Interactively, N is the prefix numeric argument, and defaults to 1.
-The user option `duplicate-line-final-position' specifies where to
-move point after duplicating the line.
 Also see the `copy-from-above-command' command.
 
 (fn &optional N)" t)
@@ -20704,15 +20736,17 @@ Uppercasify ARG chars starting from point.  Point doesn't move.
 
 (fn ARG)" t)
 (autoload 'forward-to-word "misc" "\
-Move forward until encountering the beginning of a word.
-With argument, do this that many times.
+Move forward until encountering the beginning of the ARGth word.
+ARG defaults to 1.  When called interactively, ARG is the prefix
+numeric argument.
 
-(fn ARG)" t)
+(fn &optional ARG)" t)
 (autoload 'backward-to-word "misc" "\
-Move backward until encountering the end of a word.
-With argument, do this that many times.
+Move backward until encountering the end of the ARGth word.
+ARG defaults to 1.  When called interactively, ARG is the prefix
+numeric argument.
 
-(fn ARG)" t)
+(fn &optional ARG)" t)
 (autoload 'butterfly "misc" "\
 Use butterflies to flip the desired bit on the drive platter.
 Open hands and let the delicate wings flap once.  The disturbance
@@ -20732,7 +20766,7 @@ Optional argument BUFFER specifies a buffer to use, instead of
 The return value is always nil.
 
 (fn &optional LOADED-ONLY-P BUFFER)" t)
-(register-definition-prefixes "misc" '("duplicate-line-final-position" "list-dynamic-libraries--"))
+(register-definition-prefixes "misc" '("list-dynamic-libraries--"))
 
 
 ;;; Generated autoloads from misearch.el
@@ -23486,11 +23520,6 @@ had been enabled.
 (autoload 'package-upgrade "package" "\
 Upgrade package NAME if a newer version exists.
 
-Currently, packages which are part of the Emacs distribution
-cannot be upgraded that way.  To enable upgrades of such a
-package using this command, first upgrade the package to a
-newer version from ELPA by using `\\<package-menu-mode-map>\\[package-menu-mark-install]' after `\\[list-packages]'.
-
 (fn NAME)" t)
 (autoload 'package-upgrade-all "package" "\
 Refresh package list and upgrade all packages.
@@ -23499,8 +23528,9 @@ interactively, QUERY is always true.
 
 Currently, packages which are part of the Emacs distribution are
 not upgraded by this command.  To enable upgrading such a package
-using this command, first upgrade  the package to a newer version
-from ELPA by using `\\<package-menu-mode-map>\\[package-menu-mark-install]' after `\\[list-packages]'.
+using this command, first upgrade the package to a newer version
+from ELPA by either using `\\[package-upgrade]' or
+`\\<package-menu-mode-map>\\[package-menu-mark-install]' after `\\[list-packages]'.
 
 (fn &optional QUERY)" t)
 (autoload 'package-install-from-buffer "package" "\
@@ -23574,6 +23604,11 @@ the `Version:' header.")
 (defcustom package-quickstart-file (locate-user-emacs-file "package-quickstart.el") "\
 Location of the file used to speed up activation of packages at startup." :type 'file :group 'applications :initialize #'custom-initialize-delay :version "27.1")
 (custom-autoload 'package-quickstart-file "package" t)
+(autoload 'package-report-bug "package" "\
+Prepare a message to send to the maintainers of a package.
+DESC must be a `package-desc' object.
+
+(fn DESC)" '(package-menu-mode))
 (register-definition-prefixes "package" '("bad-signature" "define-package" "describe-package-1" "package-"))
 
 
@@ -24452,6 +24487,11 @@ Note that Picture mode commands will work outside of Picture mode, but
 they are not by default assigned to keys." t)
 (defalias 'edit-picture 'picture-mode)
 (register-definition-prefixes "picture" '("picture-"))
+
+
+;;; Generated autoloads from language/pinyin.el
+
+(register-definition-prefixes "pinyin" '("pinyin-character-map"))
 
 
 ;;; Generated autoloads from textmodes/pixel-fill.el
@@ -26306,8 +26346,6 @@ evaluate `rectangle-mark-mode'.
 The mode's hook is called both when the mode is enabled and when
 it is disabled.
 
-\\{rectangle-mark-mode-map}
-
 (fn &optional ARG)" t)
 (register-definition-prefixes "rect" '("apply-on-rectangle" "clear-rectangle-line" "delete-" "extract-rectangle-" "killed-rectangle" "ope" "rectangle-" "spaces-string" "string-rectangle-"))
 
@@ -26521,12 +26559,16 @@ usually more efficient than that of a simplified version:
              (cdr parens))))
 
 (fn STRINGS &optional PAREN)")
+(function-put 'regexp-opt 'pure 't)
+(function-put 'regexp-opt 'side-effect-free 't)
 (autoload 'regexp-opt-depth "regexp-opt" "\
 Return the depth of REGEXP.
 This means the number of non-shy regexp grouping constructs
 (parenthesized expressions) in REGEXP.
 
 (fn REGEXP)")
+(function-put 'regexp-opt-depth 'pure 't)
+(function-put 'regexp-opt-depth 'side-effect-free 't)
 (register-definition-prefixes "regexp-opt" '("regexp-opt-"))
 
 
@@ -27521,6 +27563,7 @@ group.
 For extending the `rx' notation in FORM, use `rx-define' or `rx-let-eval'.
 
 (fn FORM &optional NO-GROUP)")
+(function-put 'rx-to-string 'important-return-value 't)
 (autoload 'rx "rx" "\
 Translate regular expressions REGEXPS in sexp form to a regexp string.
 Each argument is one of the forms below; RX is a subform, and RX... stands
@@ -28397,29 +28440,17 @@ With ARG non-nil, silently save all file-visiting buffers, then kill.
 If emacsclient was started with a list of filenames to edit, then
 only these files will be asked to be saved.
 
+When running Emacs as a daemon and with
+`server-stop-automatically' (which see) set to `kill-terminal' or
+`delete-frame', this function may call `save-buffers-kill-emacs'
+if there are no other active clients.
+
 (fn ARG)")
 (autoload 'server-stop-automatically "server" "\
-Automatically stop server as specified by ARG.
+Automatically stop the Emacs server as specified by VALUE.
+This sets the variable `server-stop-automatically' (which see).
 
-If ARG is the symbol `empty', stop the server when it has no
-remaining clients, no remaining unsaved file-visiting buffers,
-and no running processes with a `query-on-exit' flag.
-
-If ARG is the symbol `delete-frame', ask the user when the last
-frame is deleted whether each unsaved file-visiting buffer must
-be saved and each running process with a `query-on-exit' flag
-can be stopped, and if so, stop the server itself.
-
-If ARG is the symbol `kill-terminal', ask the user when the
-terminal is killed with \\[save-buffers-kill-terminal] whether each unsaved file-visiting
-buffer must be saved and each running process with a `query-on-exit'
-flag can be stopped, and if so, stop the server itself.
-
-Any other value of ARG will cause this function to signal an error.
-
-This function is meant to be called from the user init file.
-
-(fn ARG)")
+(fn VALUE)")
 (register-definition-prefixes "server" '("server-"))
 
 
@@ -29292,7 +29323,7 @@ it is disabled.
 
 ;;; Generated autoloads from net/soap-client.el
 
-(push (purecopy '(soap-client 3 2 1)) package--builtin-versions)
+(push (purecopy '(soap-client 3 2 3)) package--builtin-versions)
 (register-definition-prefixes "soap-client" '("soap-"))
 
 
@@ -30344,7 +30375,7 @@ Studlify-case the current buffer." t)
 (defsubst string-join (strings &optional separator) "\
 Join all STRINGS using SEPARATOR.
 Optional argument SEPARATOR must be a string, a vector, or a list of
-characters; nil stands for the empty string." (mapconcat #'identity strings separator))
+characters; nil stands for the empty string." (declare (pure t) (side-effect-free t)) (mapconcat #'identity strings separator))
 (autoload 'string-truncate-left "subr-x" "\
 If STRING is longer than LENGTH, return a truncated version.
 When truncating, \"...\" is always prepended to the string, so
@@ -30352,10 +30383,12 @@ the resulting string may be longer than the original if LENGTH is
 3 or smaller.
 
 (fn STRING LENGTH)")
+(function-put 'string-truncate-left 'pure 't)
+(function-put 'string-truncate-left 'side-effect-free 't)
 (defsubst string-blank-p (string) "\
 Check whether STRING is either empty or only whitespace.
 The following characters count as whitespace here: space, tab, newline and
-carriage return." (string-match-p "\\`[ \11\n\15]*\\'" string))
+carriage return." (declare (pure t) (side-effect-free t)) (string-match-p "\\`[ \11\n\15]*\\'" string))
 (autoload 'string-clean-whitespace "subr-x" "\
 Clean up whitespace in STRING.
 All sequences of whitespaces in STRING are collapsed into a
@@ -30363,6 +30396,7 @@ single space character, and leading/trailing whitespace is
 removed.
 
 (fn STRING)")
+(function-put 'string-clean-whitespace 'important-return-value 't)
 (autoload 'named-let "subr-x" "\
 Looping construct taken from Scheme.
 Like `let', bind variables in BINDINGS and then evaluate BODY,
@@ -30376,6 +30410,7 @@ as the new values of the bound variables in the recursive invocation.
 Return the width of STRING in pixels.
 
 (fn STRING)")
+(function-put 'string-pixel-width 'important-return-value 't)
 (autoload 'string-glyph-split "subr-x" "\
 Split STRING into a list of strings representing separate glyphs.
 This takes into account combining characters and grapheme clusters:
@@ -30384,6 +30419,7 @@ on display into a single grapheme cluster is treated as a single
 indivisible unit.
 
 (fn STRING)")
+(function-put 'string-glyph-split 'side-effect-free 't)
 (autoload 'add-display-text-property "subr-x" "\
 Add display property PROP with VALUE to the text from START to END.
 If any text in the region has a non-nil `display' property, those
@@ -30397,7 +30433,7 @@ this defaults to the current buffer.
 Query the user for a process and return the process object.
 
 (fn PROMPT)")
-(register-definition-prefixes "subr-x" '("emacs-etc--hide-local-variables" "hash-table-" "internal--thread-argument" "replace-region-contents" "string-" "thread-" "with-buffer-unmodified-if-unchanged"))
+(register-definition-prefixes "subr-x" '("emacs-etc--hide-local-variables" "eval-command-interactive-spec" "hash-table-" "internal--thread-argument" "replace-region-contents" "string-" "thread-" "with-buffer-unmodified-if-unchanged"))
 
 
 ;;; Generated autoloads from progmodes/subword.el
@@ -32756,7 +32792,7 @@ It must be supported by libarchive(3).")
 List of suffixes which indicate a compressed file.
 It must be supported by libarchive(3).")
 (defmacro tramp-archive-autoload-file-name-regexp nil "\
-Regular expression matching archive file names." (if (<= emacs-major-version 26) '(concat "\\`" "\\(" ".+" "\\." (regexp-opt tramp-archive-suffixes) "\\(?:" "\\." (regexp-opt tramp-archive-compression-suffixes) "\\)*" "\\)" "\\(" "/" ".*" "\\)" "\\'") `(rx bos (group (+ nonl) "." (| ,@tramp-archive-suffixes) (32 "." (| ,@tramp-archive-compression-suffixes))) (group "/" (* nonl)) eos)))
+Regular expression matching archive file names." `(rx bos (group (+ nonl) "." (| ,@tramp-archive-suffixes) (32 "." (| ,@tramp-archive-compression-suffixes))) (group "/" (* nonl)) eos))
 (defun tramp-archive-autoload-file-name-handler (operation &rest args) "\
 Load Tramp archive file name handler, and perform OPERATION." (defvar tramp-archive-autoload) (let ((default-directory temporary-file-directory) (tramp-archive-autoload tramp-archive-enabled)) (apply #'tramp-autoload-file-name-handler operation args)))
 (defun tramp-register-archive-autoload-file-name-handler nil "\
@@ -32778,7 +32814,6 @@ Add archive file name handler to `file-name-handler-alist'." (when (and tramp-ar
 
 ;;; Generated autoloads from net/tramp-compat.el
 
- (defalias 'tramp-compat-rx #'rx)
 (register-definition-prefixes "tramp-compat" '("tramp-"))
 
 
@@ -32844,7 +32879,7 @@ Add archive file name handler to `file-name-handler-alist'." (when (and tramp-ar
 
 ;;; Generated autoloads from net/trampver.el
 
-(push (purecopy '(tramp 2 6 0 29 1)) package--builtin-versions)
+(push (purecopy '(tramp 2 7 0 -1)) package--builtin-versions)
 (register-definition-prefixes "trampver" '("tramp-"))
 
 
@@ -32968,7 +33003,12 @@ recipe for LANG exists in `treesit-language-source-alist'.
 See `exec-path' for the current path where Emacs looks for
 executable programs, such as the C/C++ compiler and linker.
 
-(fn LANG)" t)
+Interactively, prompt for the directory in which to install the
+compiled grammar files.  Non-interactively, use OUT-DIR; if it's
+nil, the grammar is installed to the standard location, the
+\"tree-sitter\" directory under `user-emacs-directory'.
+
+(fn LANG &optional OUT-DIR)" t)
 (register-definition-prefixes "treesit" '("treesit-"))
 
 
@@ -33205,7 +33245,7 @@ The JSX-specific faces are used when `treesit-font-lock-level' is
 at least 3 (which is the default value).
 
 (fn)" t)
-(register-definition-prefixes "typescript-ts-mode" '("tsx-ts-mode--" "typescript-ts-mode-"))
+(register-definition-prefixes "typescript-ts-mode" '("typescript-ts-mode-"))
 
 
 ;;; Generated autoloads from international/ucs-normalize.el
@@ -34040,6 +34080,8 @@ Usage:
 :custom-face     Call `custom-set-faces' with each face definition.
 :ensure          Loads the package using package.el if necessary.
 :pin             Pin the package to an archive.
+:vc              Install the package directly from a version control system
+                 (using `package-vc.el').
 
 (fn NAME &rest ARGS)" nil t)
 (function-put 'use-package 'lisp-indent-function 'defun)
@@ -34646,7 +34688,7 @@ revision, with SUBJECT derived from each revision subject.
 When invoked with a numerical prefix argument, use the last N
 revisions.
 When invoked interactively in a Log View buffer with
-marked revisions, use those these.
+marked revisions, use those.
 
 (fn ADDRESSEE SUBJECT REVISIONS)" t)
 (register-definition-prefixes "vc" '("vc-" "with-vc-properties"))
@@ -34915,7 +34957,7 @@ Key bindings:
 
 ;;; Generated autoloads from progmodes/verilog-mode.el
 
-(push (purecopy '(verilog-mode 2021 10 14 127365406)) package--builtin-versions)
+(push (purecopy '(verilog-mode 2023 6 6 141322628)) package--builtin-versions)
 (autoload 'verilog-mode "verilog-mode" "\
 Major mode for editing Verilog code.
 \\<verilog-mode-map>
@@ -34949,6 +34991,11 @@ Variables controlling indentation/edit style:
    function keyword.
  `verilog-indent-level-directive'     (default 1)
    Indentation of \\=`ifdef/\\=`endif blocks.
+ `verilog-indent-ignore-multiline-defines' (default t)
+   Non-nil means ignore indentation on lines that are part of a multiline
+   define.
+ `verilog-indent-ignore-regexp'     (default nil
+   Regexp that matches lines that should be ignored for indentation.
  `verilog-cexp-indent'              (default 1)
    Indentation of Verilog statements broken across lines i.e.:
       if (a)
@@ -34972,6 +35019,9 @@ Variables controlling indentation/edit style:
    otherwise you get:
       if (a)
       begin
+ `verilog-indent-class-inside-pkg'  (default t)
+   Non-nil means indent classes inside packages.
+   Otherwise, classes have zero indentation.
  `verilog-auto-endcomments'         (default t)
    Non-nil means a comment /* ... */ is set after the ends which ends
    cases, tasks, functions and modules.
@@ -34981,6 +35031,17 @@ Variables controlling indentation/edit style:
    will be inserted.  Setting this variable to zero results in every
    end acquiring a comment; the default avoids too many redundant
    comments in tight quarters.
+ `verilog-align-decl-expr-comments' (default t)
+   Non-nil means align declaration and expressions comments.
+ `verilog-align-comment-distance'   (default 1)
+   Distance (in spaces) between longest declaration and comments.
+   Only works if `verilog-align-decl-expr-comments' is non-nil.
+ `verilog-align-assign-expr'        (default nil)
+   Non-nil means align expressions of continuous assignments.
+ `verilog-align-typedef-regexp'     (default nil)
+   Regexp that matches user typedefs for declaration alignment.
+ `verilog-align-typedef-words'      (default nil)
+   List of words that match user typedefs for declaration alignment.
  `verilog-auto-lineup'              (default `declarations')
    List of contexts where auto lineup of code should be done.
 
@@ -35004,17 +35065,20 @@ Some other functions are:
     \\[verilog-mark-defun]  Mark function.
     \\[verilog-beg-of-defun]  Move to beginning of current function.
     \\[verilog-end-of-defun]  Move to end of current function.
-    \\[verilog-label-be]  Label matching begin ... end, fork ... join, etc statements.
+    \\[verilog-label-be]  Label matching begin ... end, fork ... join, etc
+                          statements.
 
     \\[verilog-comment-region]  Put marked area in a comment.
-    \\[verilog-uncomment-region]  Uncomment an area commented with \\[verilog-comment-region].
+    \\[verilog-uncomment-region]  Uncomment an area commented with
+                                  \\[verilog-comment-region].
     \\[verilog-insert-block]  Insert begin ... end.
     \\[verilog-star-comment]    Insert /* ... */.
 
     \\[verilog-sk-always]  Insert an always @(AS) begin .. end block.
     \\[verilog-sk-begin]  Insert a begin .. end block.
     \\[verilog-sk-case]  Insert a case block, prompting for details.
-    \\[verilog-sk-for]  Insert a for (...) begin .. end block, prompting for details.
+    \\[verilog-sk-for]  Insert a for (...) begin .. end block, prompting for
+                        details.
     \\[verilog-sk-generate]  Insert a generate .. endgenerate block.
     \\[verilog-sk-header]  Insert a header block at the top of file.
     \\[verilog-sk-initial]  Insert an initial begin .. end block.
@@ -35037,14 +35101,17 @@ Some other functions are:
     \\[verilog-sk-else-if]  Insert an else if (..) begin .. end block.
     \\[verilog-sk-comment]  Insert a comment block.
     \\[verilog-sk-assign]  Insert an assign .. = ..; statement.
-    \\[verilog-sk-function]  Insert a function .. begin .. end endfunction block.
+    \\[verilog-sk-function]  Insert a function .. begin .. end endfunction
+                             block.
     \\[verilog-sk-input]  Insert an input declaration, prompting for details.
     \\[verilog-sk-output]  Insert an output declaration, prompting for details.
-    \\[verilog-sk-state-machine]  Insert a state machine definition, prompting for details.
+    \\[verilog-sk-state-machine]  Insert a state machine definition, prompting
+                                  for details.
     \\[verilog-sk-inout]  Insert an inout declaration, prompting for details.
     \\[verilog-sk-wire]  Insert a wire declaration, prompting for details.
     \\[verilog-sk-reg]  Insert a register declaration, prompting for details.
-    \\[verilog-sk-define-signal]  Define signal under point as a register at the top of the module.
+    \\[verilog-sk-define-signal]  Define signal under point as a register at
+                                  the top of the module.
 
 All key bindings can be seen in a Verilog-buffer with \\[describe-bindings].
 Key bindings specific to `verilog-mode-map' are:
@@ -36163,6 +36230,7 @@ The mode's hook is called both when the mode is enabled and when
 it is disabled.
 
 (fn &optional ARG)" t)
+(put 'global-whitespace-mode 'globalized-minor-mode t)
 (defvar global-whitespace-mode nil "\
 Non-nil if Global Whitespace mode is enabled.
 See the `global-whitespace-mode' command
@@ -36172,25 +36240,18 @@ either customize it (see the info node `Easy Customization')
 or call the function `global-whitespace-mode'.")
 (custom-autoload 'global-whitespace-mode "whitespace" nil)
 (autoload 'global-whitespace-mode "whitespace" "\
-Toggle whitespace visualization globally (Global Whitespace mode).
+Toggle Whitespace mode in all buffers.
+With prefix ARG, enable Global Whitespace mode if ARG is positive;
+otherwise, disable it.
 
-See also `whitespace-style', `whitespace-newline' and
-`whitespace-display-mappings'.
-
-This is a global minor mode.  If called interactively, toggle the
-`Global Whitespace mode' mode.  If the prefix argument is
-positive, enable the mode, and if it is zero or negative, disable
-the mode.
-
-If called from Lisp, toggle the mode if ARG is `toggle'.  Enable
-the mode if ARG is nil, omitted, or is a positive number.
+If called from Lisp, toggle the mode if ARG is `toggle'.
+Enable the mode if ARG is nil, omitted, or is a positive number.
 Disable the mode if ARG is a negative number.
 
-To check whether the minor mode is enabled in the current buffer,
-evaluate `(default-value \\='global-whitespace-mode)'.
+Whitespace mode is enabled in all buffers where
+`whitespace-turn-on-if-enabled' would do it.
 
-The mode's hook is called both when the mode is enabled and when
-it is disabled.
+See `whitespace-mode' for more information on Whitespace mode.
 
 (fn &optional ARG)" t)
 (defvar global-whitespace-newline-mode nil "\

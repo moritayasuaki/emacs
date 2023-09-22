@@ -714,7 +714,15 @@ the C sources, too."
               (high-doc (cdr high)))
           (unless (and (symbolp function)
                        (get function 'reader-construct))
-            (insert high-usage "\n"))
+            (insert high-usage "\n")
+            (when-let* ((res (comp-function-type-spec function))
+                        (type-spec (car res))
+                        (kind (cdr res)))
+              (insert (format
+                       (if (eq kind 'inferred)
+                           "\nInferred type: %s\n"
+                         "\nType: %s\n")
+                       type-spec))))
           (fill-region fill-begin (point))
           high-doc)))))
 
@@ -772,7 +780,7 @@ the C sources, too."
   (and (symbolp function)
        (not (eq (car-safe (symbol-function function)) 'macro))
        (let* ((interactive-only
-               (or (get function 'interactive-only)
+               (or (function-get function 'interactive-only)
                    (if (boundp 'byte-compile-interactive-only-functions)
                        (memq function
                              byte-compile-interactive-only-functions)))))
@@ -781,7 +789,7 @@ the C sources, too."
                    ;; Cf byte-compile-form.
                    (cond ((stringp interactive-only)
                           (format ";\n  in Lisp code %s" interactive-only))
-                         ((and (symbolp 'interactive-only)
+                         ((and (symbolp interactive-only)
                                (not (eq interactive-only t)))
                           (format-message ";\n  in Lisp code use `%s' instead."
                                           interactive-only))
@@ -999,7 +1007,7 @@ Returns a list of the form (REAL-FUNCTION DEF ALIASED REAL-DEF)."
                                               (symbol-name function)))))))
 	 (real-def (cond
                     ((and aliased (not (subrp def)))
-                     (or (car (function-alias-p real-function t))
+                     (or (car (function-alias-p real-function))
                          real-function))
 		    ((subrp def) (intern (subr-name def)))
                     (t def))))
@@ -1142,7 +1150,7 @@ Returns a list of the form (REAL-FUNCTION DEF ALIASED REAL-DEF)."
     ;; key substitution constructs, load the library.
     (and (autoloadp real-def) doc-raw
          help-enable-autoload
-         (string-match "\\([^\\]=\\|[^=]\\|\\`\\)\\\\[[{<]" doc-raw)
+         (string-match "\\([^\\]=\\|[^=]\\|\\`\\)\\\\[[{<]\\|`.*'" doc-raw)
          (autoload-do-load real-def))
 
     (help-fns--key-bindings function)
@@ -2008,8 +2016,8 @@ variable with value KEYMAP."
                   (mapatoms (lambda (symb)
                               (when (and (boundp symb)
                                          (eq (symbol-value symb) keymap)
-                                         (not (eq symb 'keymap))
-                                         (throw 'found-keymap symb)))))
+                                         (not (eq symb 'keymap)))
+                                (throw 'found-keymap symb))))
                   nil)))
       ;; Follow aliasing.
       (or (ignore-errors (indirect-variable name)) name))))

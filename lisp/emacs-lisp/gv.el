@@ -416,9 +416,9 @@ The return value is the last VAL in the list.
   (lambda (do key alist &optional default remove testfn)
     (macroexp-let2 macroexp-copyable-p k key
       (gv-letplace (getter setter) alist
-        (macroexp-let2 nil p `(if (and ,testfn (not (eq ,testfn 'eq)))
-                                  (assoc ,k ,getter ,testfn)
-                                (assq ,k ,getter))
+        (macroexp-let2 nil p (if (member testfn '(nil 'eq #'eq))
+                                 `(assq ,k ,getter)
+                               `(assoc ,k ,getter ,testfn))
           (funcall do (if (null default) `(cdr ,p)
                         `(if ,p (cdr ,p) ,default))
                    (lambda (v)
@@ -637,6 +637,13 @@ REF must have been previously obtained with `gv-ref'."
 ;;        ,@body)))
 
 ;;; Generalized variables.
+
+;; You'd think noone would write `(setf (error ...) ..)' but it
+;; appears naturally as the result of macroexpansion of things like
+;; (setf (pcase-exhaustive ...)).
+;; We could generalize this to `throw' and `signal', but it seems
+;; preferable to wait until there's a concrete need.
+(gv-define-expander error (lambda (_do &rest args) `(error . ,args)))
 
 ;; Some Emacs-related place types.
 (gv-define-simple-setter buffer-file-name set-visited-file-name t)

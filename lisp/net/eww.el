@@ -94,7 +94,8 @@ no parameters) that returns a directory name."
 (defcustom eww-suggest-uris
   '(eww-links-at-point
     thing-at-point-url-at-point
-    eww-current-url)
+    eww-current-url
+    eww-bookmark-urls)
   "List of functions called to form the list of default URIs for `eww'.
 Each of the elements is a function returning either a string or a list
 of strings.  The results will be joined into a single list with
@@ -104,7 +105,8 @@ duplicate entries (if any) removed."
   :type 'hook
   :options '(eww-links-at-point
              thing-at-point-url-at-point
-             eww-current-url))
+             eww-current-url
+             eww-bookmark-urls))
 
 (defcustom eww-bookmarks-directory user-emacs-directory
   "Directory where bookmark files will be stored."
@@ -247,7 +249,7 @@ parameter, and should return the (possibly) transformed URL."
   :version "29.1")
 
 (defface eww-form-submit
-  '((((type x w32 ns haiku pgtk) (class color))	; Like default mode line
+  '((((type x w32 ns haiku pgtk android) (class color))	; Like default mode line
      :box (:line-width 2 :style released-button)
      :background "#808080" :foreground "black"))
   "Face for eww buffer buttons."
@@ -255,7 +257,7 @@ parameter, and should return the (possibly) transformed URL."
   :group 'eww)
 
 (defface eww-form-file
-  '((((type x w32 ns haiku pgtk) (class color))	; Like default mode line
+  '((((type x w32 ns haiku pgtk android) (class color))	; Like default mode line
      :box (:line-width 2 :style released-button)
      :background "#808080" :foreground "black"))
   "Face for eww buffer buttons."
@@ -263,7 +265,7 @@ parameter, and should return the (possibly) transformed URL."
   :group 'eww)
 
 (defface eww-form-checkbox
-  '((((type x w32 ns haiku pgtk) (class color))	; Like default mode line
+  '((((type x w32 ns haiku pgtk android) (class color))	; Like default mode line
      :box (:line-width 2 :style released-button)
      :background "lightgrey" :foreground "black"))
   "Face for eww buffer buttons."
@@ -271,7 +273,7 @@ parameter, and should return the (possibly) transformed URL."
   :group 'eww)
 
 (defface eww-form-select
-  '((((type x w32 ns haiku pgtk) (class color))	; Like default mode line
+  '((((type x w32 ns haiku pgtk android) (class color))	; Like default mode line
      :box (:line-width 2 :style released-button)
      :background "lightgrey" :foreground "black"))
   "Face for eww buffer buttons."
@@ -329,6 +331,12 @@ parameter, and should return the (possibly) transformed URL."
   :parent shr-image-map
   "RET" #'eww-follow-link)
 
+(defvar-keymap eww-minibuffer-url-keymap
+  :doc "Keymap used in the minibuffer prompt for URLs or keywords."
+  :parent minibuffer-local-completion-map
+  "SPC" #'self-insert-command
+  "?" #'self-insert-command)
+
 (defun eww-suggested-uris nil
   "Return the list of URIs to suggest at the `eww' prompt.
 This list can be customized via `eww-suggest-uris'."
@@ -377,10 +385,12 @@ killed after rendering.
 
 For more information, see Info node `(eww) Top'."
   (interactive
-   (let ((uris (eww-suggested-uris)))
-     (list (read-string (format-prompt "Enter URL or keywords"
-                                       (and uris (car uris)))
-                        nil 'eww-prompt-history uris)
+   (let ((uris (eww-suggested-uris))
+         (minibuffer-local-completion-map eww-minibuffer-url-keymap))
+     (list (completing-read (format-prompt "Enter URL or keywords"
+                                           (and uris (car uris)))
+                            (seq-uniq (append eww-prompt-history uris))
+                            nil nil nil 'eww-prompt-history uris)
            current-prefix-arg)))
   (setq url (eww--dwim-expand-url url))
   (pop-to-buffer-same-window
@@ -495,14 +505,17 @@ For more information, see Info node `(eww) Top'."
 ;;;###autoload (defalias 'browse-web 'eww)
 
 ;;;###autoload
-(defun eww-open-file (file)
-  "Render FILE using EWW."
-  (interactive "fFile: ")
+(defun eww-open-file (file &optional new-buffer)
+  "Render FILE using EWW.
+If NEW-BUFFER is non-nil (interactively, the prefix arg), use a
+new buffer instead of reusing the default EWW buffer."
+  (interactive "fFile: \nP")
   (let ((url-allow-non-local-files t))
     (eww (concat "file://"
 	         (and (memq system-type '(windows-nt ms-dos))
 		      "/")
-	         (expand-file-name file)))))
+	         (expand-file-name file))
+         new-buffer)))
 
 (defun eww--file-buffer (file)
   (with-current-buffer (generate-new-buffer " *eww file*")
@@ -1073,6 +1086,7 @@ the like."
   "&" #'eww-browse-with-external-browser
   "d" #'eww-download
   "w" #'eww-copy-page-url
+  "A" #'eww-copy-alternate-url
   "C" #'url-cookie-list
   "v" #'eww-view-source
   "R" #'eww-readable
@@ -2224,6 +2238,12 @@ If ERROR-OUT, signal user-error if there are no bookmarks."
 					'eww-bookmark)))
     (eww-browse-url (plist-get bookmark :url))))
 
+(defun eww-bookmark-urls ()
+  "Get the URLs from the current list of bookmarks."
+  (interactive nil eww-boomark-mode)
+  (eww-read-bookmarks)
+  (mapcar (lambda (x) (plist-get x :url)) eww-bookmarks))
+
 (defvar-keymap eww-bookmark-mode-map
   "C-k" #'eww-bookmark-kill
   "C-y" #'eww-bookmark-yank
@@ -2505,10 +2525,10 @@ Otherwise, the restored buffer will contain a prompt to do so by using
       (when (plist-get eww-data :url)
 	(cl-case eww-restore-desktop
 	  ((t auto) (eww (plist-get eww-data :url)))
-	  ((zerop (buffer-size))
-	   (let ((inhibit-read-only t))
-	     (insert (substitute-command-keys
-		      eww-restore-reload-prompt)))))))
+	  ((nil) (when (zerop (buffer-size))
+	           (let ((inhibit-read-only t))
+	             (insert (substitute-command-keys
+		              eww-restore-reload-prompt))))))))
     ;; .
     (current-buffer)))
 
@@ -2556,5 +2576,84 @@ Otherwise, the restored buffer will contain a prompt to do so by using
 (put 'eww-bookmark-jump 'bookmark-handler-type "EWW")
 
 (provide 'eww)
+
+;;; Alternate links (RSS and Atom feeds, etc.)
+
+(defun eww--alternate-urls (dom &optional base)
+  "Return an alist of alternate links in DOM.
+
+Each element is a list of the form (URL TYPE TITLE) where URL is
+the href attribute of the link expanded relative to BASE, TYPE is
+its type attribute, and TITLE is its title attribute.  If any of
+these attributes is absent, the corresponding element is nil."
+  (let ((alternates
+         (seq-filter
+          (lambda (attrs) (string= (alist-get 'rel attrs)
+                                   "alternate"))
+          (mapcar #'dom-attributes (dom-by-tag dom 'link)))))
+    (mapcar (lambda (alternate)
+              (list (url-expand-file-name (alist-get 'href alternate)
+                                          base)
+                    (alist-get 'type  alternate)
+                    (alist-get 'title alternate)))
+            alternates)))
+
+(defun eww-read-alternate-url ()
+  "Get the URL of an alternate link of this page.
+
+If there is just one alternate link, return its URL.  If there
+are multiple alternate links, prompt for one in the minibuffer
+with completion.  If there are none, return nil."
+  (when-let ((alternates (eww--alternate-urls
+                          (plist-get eww-data :dom)
+                          (plist-get eww-data :url))))
+    (let ((url-max-width
+           (seq-max (mapcar #'string-pixel-width
+                            (mapcar #'car alternates))))
+          (title-max-width
+           (seq-max (mapcar #'string-pixel-width
+                            (mapcar #'caddr alternates))))
+          (sep-width (string-pixel-width " ")))
+      (if (cdr alternates)
+          (let ((completion-extra-properties
+                 (list :annotation-function
+                       (lambda (feed)
+                         (let* ((attrs (alist-get feed
+                                                  alternates
+                                                  nil
+                                                  nil
+                                                  #'string=))
+                                (type (car attrs))
+                                (title (cadr attrs)))
+                           (concat
+                            (propertize " " 'display
+                                        `(space :align-to
+                                                (,(+ sep-width
+                                                     url-max-width))))
+                            title
+                            (when type
+                              (concat
+                               (propertize " " 'display
+                                           `(space :align-to
+                                                   (,(+ (* 2 sep-width)
+                                                        url-max-width
+                                                        title-max-width))))
+                               "[" type "]"))))))))
+            (completing-read "Alternate URL: " alternates nil t))
+        (caar alternates)))))
+
+(defun eww-copy-alternate-url ()
+  "Copy the alternate URL of the current page into the kill ring.
+If there are multiple alternate links on the current page, prompt
+for one in the minibuffer, with completion.
+Alternate links are references that an HTML page may include to
+point to its alternative representations, such as a translated
+version or an RSS feed."
+  (interactive nil eww-mode)
+  (if-let ((url (eww-read-alternate-url)))
+      (progn
+        (kill-new url)
+        (message "Copied %s to kill ring" url))
+    (user-error "No alternate links found on this page!")))
 
 ;;; eww.el ends here

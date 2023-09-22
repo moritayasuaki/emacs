@@ -369,6 +369,52 @@ Argument LANGUAGE is either `typescript' or `tsx'."
    :override t
    '((escape_sequence) @font-lock-escape-face)))
 
+(defvar typescript-ts-mode--sentence-nodes
+  '("import_statement"
+    "debugger_statement"
+    "expression_statement"
+    "if_statement"
+    "switch_statement"
+    "for_statement"
+    "for_in_statement"
+    "while_statement"
+    "do_statement"
+    "try_statement"
+    "with_statement"
+    "break_statement"
+    "continue_statement"
+    "return_statement"
+    "throw_statement"
+    "empty_statement"
+    "labeled_statement"
+    "variable_declaration"
+    "lexical_declaration"
+    "property_signature")
+  "Nodes that designate sentences in TypeScript.
+See `treesit-sentence-type-regexp' for more information.")
+
+(defvar typescript-ts-mode--sexp-nodes
+  '("expression"
+    "pattern"
+    "array"
+    "function"
+    "string"
+    "escape"
+    "template"
+    "regex"
+    "number"
+    "identifier"
+    "this"
+    "super"
+    "true"
+    "false"
+    "null"
+    "undefined"
+    "arguments"
+    "pair")
+  "Nodes that designate sexps in TypeScript.
+See `treesit-sexp-type-regexp' for more information.")
+
 ;;;###autoload
 (define-derived-mode typescript-ts-base-mode prog-mode "TypeScript"
   "Generic major mode for editing TypeScript.
@@ -379,6 +425,11 @@ This mode is intended to be inherited by concrete major modes."
 
   ;; Comments.
   (c-ts-common-comment-setup)
+  (setq-local treesit-defun-prefer-top-level t)
+
+  (setq-local treesit-text-type-regexp
+              (regexp-opt '("comment"
+                            "template_string")))
 
   ;; Electric
   (setq-local electric-indent-chars
@@ -392,6 +443,12 @@ This mode is intended to be inherited by concrete major modes."
                             "function_declaration"
                             "lexical_declaration")))
   (setq-local treesit-defun-name-function #'js--treesit-defun-name)
+
+  (setq-local treesit-sentence-type-regexp
+              (regexp-opt typescript-ts-mode--sentence-nodes))
+
+  (setq-local treesit-sexp-type-regexp
+              (regexp-opt typescript-ts-mode--sexp-nodes))
 
   ;; Imenu (same as in `js-ts-mode').
   (setq-local treesit-simple-imenu-settings
@@ -462,6 +519,18 @@ at least 3 (which is the default value)."
     ;; Indent.
     (setq-local treesit-simple-indent-rules
                 (typescript-ts-mode--indent-rules 'tsx))
+
+    ;; Navigation
+    (setq-local treesit-sentence-type-regexp
+                (regexp-opt (append
+                             typescript-ts-mode--sentence-nodes
+                             '("jsx_element"
+                               "jsx_self_closing_element"))))
+
+  (setq-local treesit-sexp-type-regexp
+              (regexp-opt (append
+                           typescript-ts-mode--sexp-nodes
+                           '("jsx"))))
 
     ;; Font-lock.
     (setq-local treesit-font-lock-settings

@@ -24,6 +24,7 @@
 ;;; Code:
 
 (require 'esh-io)
+(require 'esh-util)
 
 (defgroup eshell-proc nil
   "When Eshell invokes external commands, it always does so
@@ -95,6 +96,9 @@ information, for example."
   :type 'hook)
 
 ;;; Internal Variables:
+
+(defvar eshell-supports-asynchronous-processes (fboundp 'make-process)
+  "Non-nil if Eshell can create asynchronous processes.")
 
 (defvar eshell-current-subjob-p nil)
 
@@ -309,7 +313,7 @@ Used only on systems which do not support async subprocesses.")
                 (coding-system-change-eol-conversion locale-coding-system
                                                      'unix))))
     (cond
-     ((fboundp 'make-process)
+     (eshell-supports-asynchronous-processes
       (unless (or ;; FIXME: It's not currently possible to use a
                   ;; stderr process for remote files.
                   (file-remote-p default-directory)
@@ -323,7 +327,7 @@ Used only on systems which do not support async subprocesses.")
                :name (concat (file-name-nondirectory command) "-stderr")
                :buffer (current-buffer)
                :filter (if (eshell-interactive-output-p eshell-error-handle)
-                           #'eshell-output-filter
+                           #'eshell-interactive-process-filter
                          #'eshell-insertion-filter)
                :sentinel #'eshell-sentinel))
         (eshell-record-process-properties stderr-proc eshell-error-handle))
@@ -339,7 +343,7 @@ Used only on systems which do not support async subprocesses.")
                :buffer (current-buffer)
                :command (cons command args)
                :filter (if (eshell-interactive-output-p)
-                           #'eshell-output-filter
+                           #'eshell-interactive-process-filter
                          #'eshell-insertion-filter)
                :sentinel #'eshell-sentinel
                :connection-type conn-type
@@ -380,6 +384,8 @@ Used only on systems which do not support async subprocesses.")
 	(erase-buffer)
 	(set-buffer oldbuf)
 	(run-hook-with-args 'eshell-exec-hook command)
+        ;; XXX: This doesn't support sending stdout and stderr to
+        ;; separate places.
 	(setq exit-status
 	      (apply #'call-process-region
 		     (append (list eshell-last-sync-output-start (point)
@@ -400,15 +406,11 @@ Used only on systems which do not support async subprocesses.")
 		  line (buffer-substring-no-properties lbeg lend))
 	    (set-buffer oldbuf)
 	    (if interact-p
-		(eshell-output-filter nil line)
+		(eshell-interactive-process-filter nil line)
 	      (eshell-output-object line))
 	    (setq lbeg lend)
 	    (set-buffer proc-buf))
 	  (set-buffer oldbuf))
-        (require 'esh-mode)
-        (declare-function eshell-update-markers "esh-mode" (pmark))
-        (defvar eshell-last-output-end)         ;Defined in esh-mode.el.
-	(eshell-update-markers eshell-last-output-end)
 	;; Simulate the effect of eshell-sentinel.
 	(eshell-close-handles
          (if (numberp exit-status) exit-status -1)
@@ -420,6 +422,20 @@ Used only on systems which do not support async subprocesses.")
 	  (error "%s: external command failed: %s" command exit-status))
 	(setq proc t))))
     proc))
+
+(defun eshell-interactive-process-filter (process string)
+  "Send the output from PROCESS (STRING) to the interactive display.
+This is done after all necessary filtering has been done."
+  (when string
+    (eshell--mark-as-output 0 (length string) string)
+    (require 'esh-mode)
+    (declare-function eshell-interactive-filter "esh-mode" (buffer string))
+    (eshell-interactive-filter (if process (process-buffer process)
+                                 (current-buffer))
+                               string)))
+
+(define-obsolete-function-alias 'eshell-output-filter
+  #'eshell-interactive-process-filter "30.1")
 
 (defun eshell-insertion-filter (proc string)
   "Insert a string into the eshell buffer, or a process/file/buffer.
@@ -486,7 +502,7 @@ PROC is the process that's exiting.  STRING is the exit message."
                           (if (process-get proc :eshell-busy)
                               (run-at-time 0 nil finish-io)
                             (when data
-                              (ignore-error 'eshell-pipe-broken
+                              (ignore-error eshell-pipe-broken
                                 (eshell-output-object
                                  data index handles)))
                             (eshell-close-handles

@@ -1912,12 +1912,17 @@ print_vectorlike (Lisp_Object obj, Lisp_Object printcharfun, bool escapeflag,
 	      print_c_string ("#<font-entity", printcharfun);
 	    for (int i = 0; i < FONT_SPEC_MAX; i++)
 	      {
-		printchar (' ', printcharfun);
-		if (i < FONT_WEIGHT_INDEX || i > FONT_WIDTH_INDEX)
-		  print_object (AREF (obj, i), printcharfun, escapeflag);
-		else
-		  print_object (font_style_symbolic (obj, i, 0),
-				printcharfun, escapeflag);
+		/* FONT_EXTRA_INDEX can contain private information in
+		   font entities which isn't safe to print.  */
+		if (i != FONT_EXTRA_INDEX || !FONT_ENTITY_P (obj))
+		  {
+		    printchar (' ', printcharfun);
+		    if (i < FONT_WEIGHT_INDEX || i > FONT_WIDTH_INDEX)
+		      print_object (AREF (obj, i), printcharfun, escapeflag);
+		    else
+		      print_object (font_style_symbolic (obj, i, 0),
+				    printcharfun, escapeflag);
+		  }
 	      }
 	  }
 	else
@@ -2201,9 +2206,9 @@ print_object (Lisp_Object obj, Lisp_Object printcharfun, bool escapeflag)
   char buf[max (sizeof "from..to..in " + 2 * INT_STRLEN_BOUND (EMACS_INT),
 		max (sizeof " . #" + INT_STRLEN_BOUND (intmax_t),
 		     max ((sizeof " with data 0x"
-			   + (sizeof (uintmax_t) * CHAR_BIT + 4 - 1) / 4),
+			   + (UINTMAX_WIDTH + 4 - 1) / 4),
 			  40)))];
-  current_thread->stack_top = buf;
+  current_thread->stack_top = NEAR_STACK_TOP (buf);
 
  print_obj:
   maybe_quit ();

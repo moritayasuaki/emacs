@@ -101,7 +101,7 @@ update the dependent variables."
   :group 'ls-lisp)
 
 (defcustom ls-lisp-ignore-case
-  (memq ls-lisp-emulation '(MS-Windows MacOS))
+  (not (not (memq ls-lisp-emulation '(MS-Windows MacOS))))
   "Non-nil causes ls-lisp alphabetic sorting to ignore case."
   :set-after '(ls-lisp-emulation)
   :type 'boolean
@@ -184,7 +184,7 @@ if emulation is GNU then default is `(links uid gid)'."
   :group 'ls-lisp)
 
 (defcustom ls-lisp-use-insert-directory-program
-  (not (memq system-type '(ms-dos windows-nt)))
+  (not (memq system-type '(ms-dos windows-nt android)))
   "Non-nil causes ls-lisp to revert back to using `insert-directory-program'.
 This is useful on platforms where ls-lisp is dumped into Emacs, such as
 Microsoft Windows, but you would still like to use a program to list

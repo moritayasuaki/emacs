@@ -1624,7 +1624,7 @@ ns_free_frame_resources (struct frame *f)
     [f->output_data.ns->miniimage release];
 
   [[view window] close];
-  [view release];
+  [view removeFromSuperview];
 
   xfree (f->output_data.ns);
   f->output_data.ns = NULL;
@@ -2728,6 +2728,7 @@ ns_clear_under_internal_border (struct frame *f)
       int width = FRAME_PIXEL_WIDTH (f);
       int height = FRAME_PIXEL_HEIGHT (f);
       int margin = FRAME_TOP_MARGIN_HEIGHT (f);
+      int bottom_margin = FRAME_BOTTOM_MARGIN_HEIGHT (f);
       int face_id =
         (FRAME_PARENT_FRAME (f)
          ? (!NILP (Vface_remapping_alist)
@@ -2753,7 +2754,8 @@ ns_clear_under_internal_border (struct frame *f)
       NSRectFill (NSMakeRect (0, 0, border, height));
       NSRectFill (NSMakeRect (0, margin, width, border));
       NSRectFill (NSMakeRect (width - border, 0, border, height));
-      NSRectFill (NSMakeRect (0, height - border, width, border));
+      NSRectFill (NSMakeRect (0, height - bottom_margin - border,
+			      width, border));
       ns_unfocus (f);
     }
 }
@@ -4608,7 +4610,7 @@ ns_send_appdefined (int value)
 
 #if defined (NS_IMPL_COCOA) && MAC_OS_X_VERSION_MAX_ALLOWED >= 1070
 static void
-check_native_fs ()
+check_native_fs (void)
 {
   Lisp_Object frame, tail;
 
@@ -6708,16 +6710,8 @@ ns_create_font_panel_buttons (id target, SEL select, SEL cancel_action)
 
 - (void)resetCursorRects
 {
-  NSRect visible;
-  NSCursor *currentCursor;
-
-  /* On macOS 13, [resetCursorRects:] could be called even after the
-     window is closed. */
-  if (! emacsframe || ! FRAME_OUTPUT_DATA (emacsframe))
-    return;
-
-  visible = [self visibleRect];
-  currentCursor = FRAME_POINTER_TYPE (emacsframe);
+  NSRect visible = [self visibleRect];
+  NSCursor *currentCursor = FRAME_POINTER_TYPE (emacsframe);
   NSTRACE ("[EmacsView resetCursorRects]");
 
   if (currentCursor == nil)

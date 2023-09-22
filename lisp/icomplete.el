@@ -69,11 +69,12 @@ When nil, show candidates in full."
   :type 'boolean
   :version "24.4")
 
-(defvar icomplete-tidy-shadowed-file-names nil
+(defcustom icomplete-tidy-shadowed-file-names nil
   "If non-nil, automatically delete superfluous parts of file names.
 For example, if the user types ~/ after a long path name,
 everything preceding the ~/ is discarded so the interactive
-selection process starts again from the user's $HOME.")
+selection process starts again from the user's $HOME."
+  :type 'boolean)
 
 (defcustom icomplete-show-matches-on-no-input nil
   "When non-nil, show completions when first prompting for input.
@@ -137,10 +138,11 @@ See `icomplete-delay-completions-threshold'."
   "Maximum number of initial chars to apply `icomplete-compute-delay'."
   :type 'integer)
 
-(defvar icomplete-in-buffer nil
+(defcustom icomplete-in-buffer nil
   "If non-nil, also use Icomplete when completing in non-mini buffers.
 This affects commands like `completion-in-region', but not commands
-that use their own completions setup.")
+that use their own completions setup."
+  :type 'boolean)
 
 (defcustom icomplete-minibuffer-setup-hook nil
   "Icomplete-specific customization of minibuffer setup.
@@ -717,11 +719,13 @@ If it's on, just add the vertical display."
 Should be run via minibuffer `post-command-hook'.
 See `icomplete-mode' and `minibuffer-setup-hook'."
   (when (and icomplete-mode
+             ;; Check if still in the right buffer (bug#61308)
+             (or (window-minibuffer-p) completion-in-region--data)
              (icomplete-simple-completing-p)) ;Shouldn't be necessary.
     (let ((saved-point (point)))
       (save-excursion
         (goto-char (icomplete--field-end))
-                                        ; Insert the match-status information:
+        ;; Insert the match-status information:
         (when (and (or icomplete-show-matches-on-no-input
                        (not (equal (icomplete--field-string)
                                    icomplete--initial-input)))

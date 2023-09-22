@@ -97,6 +97,14 @@
   :group 'external
   :group 'help)
 
+(defcustom Man-prefer-synchronous-call nil
+  "Whether to call the Un*x \"man\" program synchronously.
+When this is non-nil, call the \"man\" program synchronously
+(rather than asynchronously, which is the default behavior)."
+  :type 'boolean
+  :group 'man
+  :version "30.1")
+
 (defcustom Man-filter-list nil
   "Manpage cleaning filter command phrases.
 This variable contains a list of the following form:
@@ -307,7 +315,7 @@ If this is nil, `man' will use `locale-coding-system'."
   :type 'hook
   :group 'man)
 
-(defvar Man-name-regexp "[-[:alnum:]_­+][-[:alnum:]_.:­+]*"
+(defvar Man-name-regexp "[-[:alnum:]_­+[@][-[:alnum:]_.:­+]*"
   "Regular expression describing the name of a manpage (without section).")
 
 (defvar Man-section-regexp "[0-9][a-zA-Z0-9+]*\\|[LNln]"
@@ -929,7 +937,16 @@ foo(sec)[, bar(sec) [, ...]] [other stuff] - description"
                          "-k" (concat (when (or Man-man-k-use-anchor
                                                 (string-equal prefix ""))
                                         "^")
-                                      prefix))))
+                                      (if (string-equal prefix "")
+                                          prefix
+                                        ;; FIXME: shell-quote-argument
+                                        ;; is not entirely
+                                        ;; appropriate: we actually
+                                        ;; need to quote ERE here.
+                                        ;; But we don't have that, and
+                                        ;; shell-quote-argument does
+                                        ;; the job...
+                                        (shell-quote-argument prefix))))))
               (setq table (Man-parse-man-k)))))
 	;; Cache the table for later reuse.
         (when table
@@ -1118,7 +1135,8 @@ Return the buffer in which the manpage will appear."
 					"[cleaning...]")
 				      'face 'mode-line-emphasis)))
 	(Man-start-calling
-	 (if (fboundp 'make-process)
+	 (if (and (fboundp 'make-process)
+                  (not Man-prefer-synchronous-call))
 	     (let ((proc (start-process
 			  manual-program buffer
 			  (if (memq system-type '(cygwin windows-nt))
@@ -1262,21 +1280,21 @@ Same for the ANSI bold and normal escape sequences."
 	(progn
 	  (goto-char (point-min))
 	  (while (and (search-forward "__\b\b" nil t) (not (eobp)))
-	    (backward-delete-char 4)
+	    (delete-char -4)
             (put-text-property (point) (1+ (point))
                                'font-lock-face 'Man-underline))
 	  (goto-char (point-min))
 	  (while (search-forward "\b\b__" nil t)
-	    (backward-delete-char 4)
+	    (delete-char -4)
             (put-text-property (1- (point)) (point)
                                'font-lock-face 'Man-underline))))
     (goto-char (point-min))
     (while (and (search-forward "_\b" nil t) (not (eobp)))
-      (backward-delete-char 2)
+      (delete-char -2)
       (put-text-property (point) (1+ (point)) 'font-lock-face 'Man-underline))
     (goto-char (point-min))
     (while (search-forward "\b_" nil t)
-      (backward-delete-char 2)
+      (delete-char -2)
       (put-text-property (1- (point)) (point) 'font-lock-face 'Man-underline))
     (goto-char (point-min))
     (while (re-search-forward "\\(.\\)\\(\b+\\1\\)+" nil t)
@@ -1294,7 +1312,7 @@ Same for the ANSI bold and normal escape sequences."
     ;; condense it to a shorter line interspersed with ^H.  Remove ^H with
     ;; their preceding chars (but don't put Man-overstrike).  (Bug#5566)
     (goto-char (point-min))
-    (while (re-search-forward ".\b" nil t) (backward-delete-char 2))
+    (while (re-search-forward ".\b" nil t) (delete-char -2))
     (goto-char (point-min))
     ;; Try to recognize common forms of cross references.
     (Man-highlight-references)
@@ -1375,9 +1393,9 @@ script would have done them."
   (if (or interactive (not Man-sed-script))
       (progn
 	(goto-char (point-min))
-	(while (search-forward "_\b" nil t) (backward-delete-char 2))
+	(while (search-forward "_\b" nil t) (delete-char -2))
 	(goto-char (point-min))
-	(while (search-forward "\b_" nil t) (backward-delete-char 2))
+	(while (search-forward "\b_" nil t) (delete-char -2))
 	(goto-char (point-min))
 	(while (re-search-forward "\\(.\\)\\(\b\\1\\)+" nil t)
 	  (replace-match "\\1"))
@@ -1392,7 +1410,7 @@ script would have done them."
   ;; condense it to a shorter line interspersed with ^H.  Remove ^H with
   ;; their preceding chars (but don't put Man-overstrike).  (Bug#5566)
   (goto-char (point-min))
-  (while (re-search-forward ".\b" nil t) (backward-delete-char 2))
+  (while (re-search-forward ".\b" nil t) (delete-char -2))
   (Man-softhyphen-to-minus))
 
 (defun Man-bgproc-filter (process string)

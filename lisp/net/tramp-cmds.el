@@ -207,17 +207,84 @@ This includes password cache, file cache, connection cache, buffers."
   ;; The end.
   (run-hooks 'tramp-cleanup-all-connections-hook))
 
+(defcustom tramp-cleanup-some-buffers-hook nil
+  "Hook for `tramp-cleanup-some-buffers'.
+The functions determine which buffers shall be killed.  This
+happens when at least one of the functions returns non-nil.  The
+functions are called with `current-buffer' set."
+  :group 'tramp
+  :version "30.1"
+  :type 'hook)
+
+(add-hook 'tramp-cleanup-some-buffers-hook
+	  #'buffer-file-name)
+
+(defun tramp-cleanup-dired-buffer-p ()
+  "Return t if current buffer runs `dired-mode'."
+  (declare (tramp-suppress-trace t))
+  (derived-mode-p 'dired-mode))
+
+(add-hook 'tramp-cleanup-some-buffers-hook
+	  #'tramp-cleanup-dired-buffer-p)
+
+(defvar tramp-tainted-remote-process-buffers nil
+  "List of process buffers to be cleaned up.")
+
+(defun tramp-delete-tainted-remote-process-buffer-function ()
+  "Delete current buffer from `tramp-tainted-remote-process-buffers'."
+  (declare (tramp-suppress-trace t))
+  (setq tramp-tainted-remote-process-buffers
+	(delete (current-buffer) tramp-tainted-remote-process-buffers)))
+
 ;;;###tramp-autoload
-(defun tramp-cleanup-all-buffers ()
-  "Kill all remote buffers."
+(defun tramp-taint-remote-process-buffer (buffer)
+  "Mark buffer as related to remote processes."
+  ;; (declare (tramp-suppress-trace t))
+  (add-to-list 'tramp-tainted-remote-process-buffers buffer))
+
+;; We cannot use the `declare' form for `tramp-suppress-trace' in
+;; autoloaded functions, because the tramp-loaddefs.el generation
+;; would fail.
+(function-put #'tramp-taint-remote-process-buffer 'tramp-suppress-trace t)
+
+(add-hook 'kill-buffer-hook
+	  #'tramp-delete-tainted-remote-process-buffer-function)
+(add-hook 'tramp-unload-hook
+	  (lambda ()
+	    (remove-hook 'kill-buffer-hook
+			 #'tramp-delete-tainted-remote-process-buffer-function)))
+
+(defun tramp-cleanup-remote-process-p ()
+  "Return t if current buffer belongs to a remote process."
+  (memq (current-buffer) tramp-tainted-remote-process-buffers))
+
+(add-hook 'tramp-cleanup-some-buffers-hook
+	  #'tramp-cleanup-remote-process-p)
+
+;;;###tramp-autoload
+(defun tramp-cleanup-some-buffers ()
+  "Kill some remote buffers.
+A buffer is killed when it has a remote `default-directory', and
+one of the functions in `tramp-cleanup-some-buffers-hook' returns
+non-nil."
   (interactive)
 
   ;; Remove all Tramp related connections.
   (tramp-cleanup-all-connections)
 
-  ;; Remove all buffers with a remote default-directory.
+  ;; Remove all buffers with a remote default-directory which fit the hook.
   (dolist (name (tramp-list-remote-buffers))
-    (when (bufferp (get-buffer name)) (kill-buffer name))))
+    (and (buffer-live-p (get-buffer name))
+	 (with-current-buffer (get-buffer name)
+	   (run-hook-with-args-until-success 'tramp-cleanup-some-buffers-hook))
+	 (kill-buffer name))))
+
+;;;###tramp-autoload
+(defun tramp-cleanup-all-buffers ()
+  "Kill all remote buffers."
+  (interactive)
+  (let ((tramp-cleanup-some-buffers-hook '(tramp-compat-always)))
+    (tramp-cleanup-some-buffers)))
 
 (defcustom tramp-default-rename-alist nil
   "Default target for renaming remote buffer file names.
@@ -359,7 +426,7 @@ The remote connection identified by SOURCE is flushed by
 		      (dir (tramp-rename-read-file-name-dir default))
 		      (init (tramp-rename-read-file-name-init default))
 		      (tramp-ignored-file-name-regexp
-		       (tramp-compat-rx (literal (file-remote-p source)))))
+		       (rx (literal (file-remote-p source)))))
 		 (read-file-name-default
 		  "Enter new Tramp connection: "
 		  dir default 'confirm init #'file-directory-p)))))
@@ -470,7 +537,7 @@ For details, see `tramp-rename-files'."
 		      (dir (tramp-rename-read-file-name-dir default))
 		      (init (tramp-rename-read-file-name-init default))
 		      (tramp-ignored-file-name-regexp
-		       (tramp-compat-rx (literal (file-remote-p source)))))
+		       (rx (literal (file-remote-p source)))))
 		 (read-file-name-default
 		  (format "Change Tramp connection `%s': " source)
 		  dir default 'confirm init #'file-directory-p)))))
@@ -625,7 +692,7 @@ buffer in your bug report.
     (unless (hash-table-p val)
       ;; Remove string quotation.
       (when (looking-at
-	     (tramp-compat-rx
+	     (rx
 	      bol (group (* anychar)) "\""          ;; \1 "
 	      (group "(base64-decode-string ") "\\" ;; \2 \
 	      (group "\"" (* anychar)) "\\"         ;; \3 \
@@ -679,7 +746,7 @@ buffer in your bug report.
 
   ;; Beautify encoded values.
   (goto-char (point-min))
-  (while (re-search-forward
+  (while (search-forward-regexp
 	  (rx "'" (group "(decode-coding-string")) nil 'noerror)
     (replace-match "\\1"))
   (goto-char (point-max))
@@ -707,7 +774,7 @@ buffer in your bug report.
 	(setq buffer-read-only nil)
 	(goto-char (point-min))
 	(while (not (eobp))
-	  (if (re-search-forward tramp-buf-regexp (line-end-position) t)
+	  (if (search-forward-regexp tramp-buf-regexp (line-end-position) t)
 	      (forward-line 1)
 	    (forward-line 0)
 	    (let ((start (point)))

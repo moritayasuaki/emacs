@@ -201,7 +201,7 @@ should return.
 Note that Emacs Lisp doesn't really support multiple values, so
 all this function does is return LIST."
   (unless (listp list)
-    (signal 'wrong-type-argument list))
+    (signal 'wrong-type-argument (list list)))
   list)
 
 (defsubst cl-multiple-value-list (expression)
@@ -459,6 +459,7 @@ Thus, `(cl-list* A B C D)' is equivalent to `(nconc (list A B C) D)', or to
 (defun cl-copy-list (list)
   "Return a copy of LIST, which may be a dotted list.
 The elements of LIST are not copied, just the list structure itself."
+  (declare (side-effect-free error-free))
   (if (consp list)
       (let ((res nil))
 	(while (consp list) (push (pop list) res))

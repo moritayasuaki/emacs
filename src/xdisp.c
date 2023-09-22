@@ -637,8 +637,8 @@ fill_column_indicator_column (struct it *it, int char_width)
       if (RANGED_FIXNUMP (0, col, INT_MAX))
 	{
           int icol = XFIXNUM (col);
-	  if (!INT_MULTIPLY_WRAPV (char_width, icol, &icol)
-	      && !INT_ADD_WRAPV (it->lnum_pixel_width, icol, &icol))
+	  if (!ckd_mul (&icol, icol, char_width)
+	      && !ckd_add (&icol, icol, it->lnum_pixel_width))
 	    return icol;
 	}
     }
@@ -1229,6 +1229,7 @@ static void get_cursor_offset_for_mouse_face (struct window *w,
 #endif /* HAVE_WINDOW_SYSTEM */
 
 static void produce_special_glyphs (struct it *, enum display_element_type);
+static void pad_mode_line (struct it *, bool);
 static void show_mouse_face (Mouse_HLInfo *, enum draw_glyphs_face);
 static bool coords_in_mouse_face_p (struct window *, int, int);
 static void reset_box_start_end_flags (struct it *);
@@ -2758,6 +2759,7 @@ remember_mouse_glyph (struct frame *f, int gx, int gy, NativeRectangle *rect)
   enum window_part part;
   enum glyph_row_area area;
   int x, y, width, height;
+  int original_gx;
 
   if (mouse_fine_grained_tracking)
     {
@@ -2767,6 +2769,8 @@ remember_mouse_glyph (struct frame *f, int gx, int gy, NativeRectangle *rect)
 
   /* Try to determine frame pixel position and size of the glyph under
      frame pixel coordinates X/Y on frame F.  */
+
+  original_gx = gx;
 
   if (window_resize_pixelwise)
     {
@@ -2983,6 +2987,15 @@ remember_mouse_glyph (struct frame *f, int gx, int gy, NativeRectangle *rect)
   gy += WINDOW_TOP_EDGE_Y (w);
 
  store_rect:
+  if (mouse_prefer_closest_glyph)
+    {
+      int half_width = width / 2;
+      width = half_width;
+
+      int bisection = gx + half_width;
+      if (original_gx > bisection)
+        gx = bisection;
+    }
   STORE_NATIVE_RECT (*rect, gx, gy, width, height);
 
   /* Visible feedback for debugging.  */
@@ -4212,7 +4225,7 @@ compute_stop_pos (struct it *it)
 {
   register INTERVAL iv, next_iv;
   Lisp_Object object, limit, position;
-  ptrdiff_t charpos, bytepos;
+  ptrdiff_t charpos, bytepos, cmp_limit_pos = -1;
 
   if (STRINGP (it->string))
     {
@@ -4282,7 +4295,10 @@ compute_stop_pos (struct it *it)
 		}
 	    }
 	  if (found)
-	    pos--;
+	    {
+	      pos--;
+	      cmp_limit_pos = pos;
+	    }
 	  else if (it->stop_charpos < endpos)
 	    pos = it->stop_charpos;
 	  else
@@ -4340,14 +4356,25 @@ compute_stop_pos (struct it *it)
 	}
     }
 
-  if (it->cmp_it.id < 0)
+  if (it->cmp_it.id < 0
+      && (STRINGP (it->string)
+	  || ((!it->bidi_p || it->bidi_it.scan_dir >= 0)
+	      && it->cmp_it.stop_pos <= IT_CHARPOS (*it))))
     {
       ptrdiff_t stoppos = it->end_charpos;
 
+      /* If we found, above, a buffer position that cannot be part of
+         an automatic composition, limit the search of composable
+         characters to that position.  */
       if (it->bidi_p && it->bidi_it.scan_dir < 0)
 	stoppos = -1;
+      else if (cmp_limit_pos > 0)
+	stoppos = cmp_limit_pos;
+      /* Force composition_compute_stop_pos avoid the costly search
+         for static compositions, since those were already found by
+         looking at text properties, above.  */
       composition_compute_stop_pos (&it->cmp_it, charpos, bytepos,
-				    stoppos, it->string);
+				    stoppos, it->string, false);
     }
 
   eassert (STRINGP (it->string)
@@ -7877,7 +7904,7 @@ reseat_to_string (struct it *it, const char *s, Lisp_Object string,
       if (endpos > it->end_charpos)
 	endpos = it->end_charpos;
       composition_compute_stop_pos (&it->cmp_it, charpos, -1, endpos,
-				    it->string);
+				    it->string, true);
     }
   CHECK_IT (it);
 }
@@ -8573,7 +8600,7 @@ set_iterator_to_next (struct it *it, bool reseat_p)
 		   where to stop.  */
 		stop = -1;
 	      composition_compute_stop_pos (&it->cmp_it, IT_CHARPOS (*it),
-					    IT_BYTEPOS (*it), stop, Qnil);
+					    IT_BYTEPOS (*it), stop, Qnil, true);
 	    }
 	}
       else
@@ -8604,7 +8631,8 @@ set_iterator_to_next (struct it *it, bool reseat_p)
 		  if (it->bidi_it.scan_dir < 0)
 		    stop = -1;
 		  composition_compute_stop_pos (&it->cmp_it, IT_CHARPOS (*it),
-						IT_BYTEPOS (*it), stop, Qnil);
+						IT_BYTEPOS (*it), stop, Qnil,
+						true);
 		}
 	    }
 	  eassert (IT_BYTEPOS (*it) == CHAR_TO_BYTE (IT_CHARPOS (*it)));
@@ -8760,7 +8788,7 @@ set_iterator_to_next (struct it *it, bool reseat_p)
 	      composition_compute_stop_pos (&it->cmp_it,
 					    IT_STRING_CHARPOS (*it),
 					    IT_STRING_BYTEPOS (*it), stop,
-					    it->string);
+					    it->string, true);
 	    }
 	}
       else
@@ -8797,7 +8825,7 @@ set_iterator_to_next (struct it *it, bool reseat_p)
 		  composition_compute_stop_pos (&it->cmp_it,
 						IT_STRING_CHARPOS (*it),
 						IT_STRING_BYTEPOS (*it), stop,
-						it->string);
+						it->string, true);
 		}
 	    }
 	}
@@ -9048,7 +9076,7 @@ get_visually_first_element (struct it *it)
       if (it->bidi_it.scan_dir < 0)
 	stop = -1;
       composition_compute_stop_pos (&it->cmp_it, charpos, bytepos, stop,
-				    it->string);
+				    it->string, true);
     }
 }
 
@@ -11677,6 +11705,8 @@ WINDOW.  */)
 
   set_buffer_internal_1 (b);
 
+  ptrdiff_t base_line_pos = w->base_line_pos;
+  int end_valid = w->window_end_valid;
   if (!EQ (buffer, w->contents))
     {
       wset_buffer (w, buffer);
@@ -11688,6 +11718,11 @@ WINDOW.  */)
 				  Qnil);
 
   unbind_to (count, Qnil);
+
+  /* Restore original values.  This is important if this function is
+     called from some ':eval' form in the middle of redisplay.  */
+  w->base_line_pos = base_line_pos;
+  w->window_end_valid = end_valid;
 
   return value;
 }
@@ -12616,7 +12651,7 @@ display_echo_area (struct window *w)
      reset the echo_area_buffer in question to nil at the end because
      with_echo_area_buffer will set it to an empty buffer.  */
   bool i = display_last_displayed_message_p;
-  /* According to the C99, C11 and C++11 standards, the integral value
+  /* According to the C standard, the integral value
      of a "bool" is always 0 or 1, so this array access is safe here,
      if oddly typed. */
   no_message_p = NILP (echo_area_buffer[i]);
@@ -13114,7 +13149,7 @@ clear_garbaged_frames (void)
 	{
 	  struct frame *f = XFRAME (frame);
 
-	  if (FRAME_VISIBLE_P (f) && FRAME_GARBAGED_P (f))
+	  if (FRAME_REDISPLAY_P (f) && FRAME_GARBAGED_P (f))
 	    {
 	      if (f->resized_p
 		  /* It makes no sense to redraw a non-selected TTY
@@ -13163,7 +13198,7 @@ echo_area_display (bool update_frame_p)
   f = XFRAME (WINDOW_FRAME (w));
 
   /* Don't display if frame is invisible or not yet initialized.  */
-  if (!FRAME_VISIBLE_P (f) || !f->glyphs_initialized_p)
+  if (!FRAME_REDISPLAY_P (f) || !f->glyphs_initialized_p)
     return;
 
 #ifdef HAVE_WINDOW_SYSTEM
@@ -13720,7 +13755,7 @@ prepare_menu_bars (void)
 		     TTY frames to be completely redrawn, when there
 		     are more than one of them, even though nothing
 		     should be changed on display.  */
-		  || (FRAME_VISIBLE_P (f) == 2 && FRAME_WINDOW_P (f))))
+		  || (FRAME_REDISPLAY_P (f) && FRAME_WINDOW_P (f))))
 	    gui_consider_frame_title (frame);
 	}
     }
@@ -14611,21 +14646,32 @@ tab_bar_item_info (struct frame *f, struct glyph *glyph,
 			     Qmenu_item, f->current_tab_bar_string);
   if (! FIXNUMP (prop))
     return false;
+
   *prop_idx = XFIXNUM (prop);
 
-  *close_p = !NILP (Fget_text_property (make_fixnum (charpos),
-                                        Qclose_tab,
-                                        f->current_tab_bar_string));
+  if (close_p)
+    *close_p = !NILP (Fget_text_property (make_fixnum (charpos),
+					  Qclose_tab,
+					  f->current_tab_bar_string));
 
   return true;
 }
 
 
-/* Get information about the tab-bar item at position X/Y on frame F.
-   Return in *GLYPH a pointer to the glyph of the tab-bar item in
-   the current matrix of the tab-bar window of F, or NULL if not
-   on a tab-bar item.  Return in *PROP_IDX the index of the tab-bar
-   item in F->tab_bar_items.  Value is
+/* Get information about the tab-bar item at position X/Y on frame F's
+   tab bar window.
+
+   Set *GLYPH to a pointer to the glyph of the tab-bar item in the
+   current matrix of the tab-bar window of F, or NULL if not on a
+   tab-bar item.  Return in *PROP_IDX the index of the tab-bar item in
+   F->tab_bar_items.
+
+   Place the window-relative vpos of Y in *VPOS, and the
+   window-relative hpos of X in *HPOS.  If CLOSE_P, set it to whether
+   or not the tab bar item represents a button that should close a
+   tab.
+
+   Value is
 
    -1	if X/Y is not on a tab-bar item
    0	if X/Y is on the same item that was highlighted before.
@@ -14633,7 +14679,7 @@ tab_bar_item_info (struct frame *f, struct glyph *glyph,
 
 static int
 get_tab_bar_item (struct frame *f, int x, int y, struct glyph **glyph,
-		   int *hpos, int *vpos, int *prop_idx, bool *close_p)
+		  int *hpos, int *vpos, int *prop_idx, bool *close_p)
 {
   struct window *w = XWINDOW (f->tab_bar_window);
   int area;
@@ -14651,6 +14697,38 @@ get_tab_bar_item (struct frame *f, int x, int y, struct glyph **glyph,
   return *prop_idx == f->last_tab_bar_item ? 0 : 1;
 }
 
+/* EXPORT:
+
+   Like `get_tab_bar_item'.  However, don't return anything for GLYPH,
+   HPOS, or VPOS, and treat X and Y as relative to F itself, as
+   opposed to its tab bar window.  */
+
+int
+get_tab_bar_item_kbd (struct frame *f, int x, int y, int *prop_idx,
+		      bool *close_p)
+{
+  struct window *w;
+  int area, vpos, hpos;
+  struct glyph *glyph;
+
+  w = XWINDOW (f->tab_bar_window);
+
+  /* Convert X and Y to window coordinates.  */
+  frame_to_window_pixel_xy (w, &x, &y);
+
+  /* Find the glyph under X/Y.  */
+  glyph = x_y_to_hpos_vpos (w, x, y, &hpos, &vpos, 0,
+			    0, &area);
+  if (glyph == NULL)
+    return -1;
+
+  /* Get the start of this tab-bar item's properties in
+     f->tab_bar_items.  */
+  if (!tab_bar_item_info (f, glyph, prop_idx, close_p))
+    return -1;
+
+  return *prop_idx == f->last_tab_bar_item ? 0 : 1;
+}
 
 /* EXPORT:
    Handle mouse button event on the tab-bar of frame F, at
@@ -14983,7 +15061,10 @@ update_tool_bar (struct frame *f, bool save_match_data)
 
 /* Set F->desired_tool_bar_string to a Lisp string representing frame
    F's desired tool-bar contents.  F->tool_bar_items must have
-   been set up previously by calling prepare_menu_bars.  */
+   been set up previously by calling prepare_menu_bars.
+
+   Also set F->tool_bar_wraps_p to whether or not the tool bar
+   contains explicit line breaking items.  */
 
 static void
 build_desired_tool_bar_string (struct frame *f)
@@ -15005,15 +15086,19 @@ build_desired_tool_bar_string (struct frame *f)
   size_needed = f->n_tool_bar_items;
 
   /* Reuse f->desired_tool_bar_string, if possible.  */
+
   if (size < size_needed || NILP (f->desired_tool_bar_string))
-    fset_desired_tool_bar_string
-      (f, Fmake_string (make_fixnum (size_needed), make_fixnum (' '), Qnil));
+    /* Don't initialize the contents of this string yet, as they will
+       be set within the loop below.  */
+    fset_desired_tool_bar_string (f, make_uninit_string (size_needed));
   else
     {
       AUTO_LIST4 (props, Qdisplay, Qnil, Qmenu_item, Qnil);
       Fremove_text_properties (make_fixnum (0), make_fixnum (size),
 			       props, f->desired_tool_bar_string);
     }
+
+  f->tool_bar_wraps_p = false;
 
   /* Put a `display' property on the string for the images to display,
      put a `menu_item' property on tool-bar items with a value that
@@ -15026,6 +15111,21 @@ build_desired_tool_bar_string (struct frame *f)
       bool enabled_p = !NILP (PROP (TOOL_BAR_ITEM_ENABLED_P));
       bool selected_p = !NILP (PROP (TOOL_BAR_ITEM_SELECTED_P));
       int hmargin, vmargin, relief, idx, end;
+
+      if (!NILP (PROP (TOOL_BAR_ITEM_WRAP)))
+	{
+	  /* This is a line wrap.  Instead of building a tool bar
+	     item, display a new line character instead.  */
+	  SSET (f->desired_tool_bar_string, i, '\n');
+
+	  /* Set F->tool_bar_wraps_p.  This tells redisplay_tool_bar
+	     to allow individual rows to be different heights.  */
+	  f->tool_bar_wraps_p = true;
+	  continue;
+	}
+
+      /* Replace this with a space character.  */
+      SSET (f->desired_tool_bar_string, i, ' ');
 
       /* If image is a vector, choose the image according to the
 	 button state.  */
@@ -15138,6 +15238,16 @@ build_desired_tool_bar_string (struct frame *f)
 			    props, f->desired_tool_bar_string);
 #undef PROP
     }
+
+  /* Now replace each character between i and the end of the tool bar
+     string with spaces, to prevent stray newlines from accumulating
+     when the number of tool bar items decreases.  `size' is 0 if the
+     tool bar string is new, but in that case the string will have
+     been completely initialized anyway.  */
+
+  for (; i < size; ++i)
+    /* Replace this with a space character.  */
+    SSET (f->desired_tool_bar_string, i, ' ');
 }
 
 
@@ -15151,7 +15261,10 @@ build_desired_tool_bar_string (struct frame *f)
    If HEIGHT is -1, we are counting needed tool-bar lines, so don't
    count a final empty row in case the tool-bar width exactly matches
    the window width.
-*/
+
+   HEIGHT may also be -1 if there is an explicit line wrapping item
+   inside the tool bar; in that case, allow individual rows of the
+   tool bar to differ in height.  */
 
 static void
 display_tool_bar_line (struct it *it, int height)
@@ -15215,8 +15328,18 @@ display_tool_bar_line (struct it *it, int height)
 	  ++i;
 	}
 
-      /* Stop at line end.  */
+      /* Stop at the end of the iterator, and move to the next line
+         upon a '\n' appearing in the tool bar string.  Tool bar
+         strings may contain multiple new line characters when
+         explicit wrap items are encountered.  */
+
       if (ITERATOR_AT_END_OF_LINE_P (it))
+	{
+	  reseat_at_next_visible_line_start (it, false);
+	  break;
+	}
+
+      if (ITERATOR_AT_END_P (it))
 	break;
 
       set_iterator_to_next (it, true);
@@ -15243,7 +15366,8 @@ display_tool_bar_line (struct it *it, int height)
     last->left_box_line_p = true;
 
   /* Make line the desired height and center it vertically.  */
-  if ((height -= it->max_ascent + it->max_descent) > 0)
+  if (height != -1
+      && (height -= it->max_ascent + it->max_descent) > 0)
     {
       /* Don't add more than one line height.  */
       height %= FRAME_LINE_HEIGHT (it->f);
@@ -15277,6 +15401,7 @@ display_tool_bar_line (struct it *it, int height)
 /* Value is the number of pixels needed to make all tool-bar items of
    frame F visible.  The actual number of glyph rows needed is
    returned in *N_ROWS if non-NULL.  */
+
 static int
 tool_bar_height (struct frame *f, int *n_rows, bool pixelwise)
 {
@@ -15354,7 +15479,9 @@ redisplay_tool_bar (struct frame *f)
   struct window *w;
   struct it it;
   struct glyph_row *row;
+  bool change_height_p;
 
+  change_height_p = false;
   f->tool_bar_redisplayed = true;
 
   /* If frame hasn't a tool-bar window or if it is zero-height, don't
@@ -15407,6 +15534,15 @@ redisplay_tool_bar (struct frame *f)
 	  /* Always do that now.  */
 	  clear_glyph_matrix (w->desired_matrix);
 	  f->fonts_changed = true;
+
+	  /* Kludge (this applies to the X Windows version as well as
+	     Android): when the tool bar size changes,
+	     adjust_window_size (presumably called by
+	     change_tool_bar_height_hook) does not call through to
+	     resize_frame_windows.  Pending further investigation,
+	     just call it here as well.  */
+	  resize_frame_windows (f, FRAME_INNER_HEIGHT (f), false);
+
 	  return true;
 	}
     }
@@ -15429,18 +15565,39 @@ redisplay_tool_bar (struct frame *f)
 	border = 0;
 
       rows = f->n_tool_bar_rows;
-      height = max (1, (it.last_visible_y - border) / rows);
-      extra = it.last_visible_y - border - height * rows;
 
-      while (it.current_y < it.last_visible_y)
+      if (f->tool_bar_wraps_p)
 	{
-	  int h = 0;
-	  if (extra > 0 && rows-- > 0)
+	  /* If the tool bar contains explicit line wrapping items,
+	     don't force each row to have a fixed height.  */
+
+	  while (!ITERATOR_AT_END_P (&it))
+	    display_tool_bar_line (&it, -1);
+
+	  /* Because changes to individual tool bar items may now
+	     change the height of the tool bar, adjust the height of
+	     the tool bar window if it is different from the tool bar
+	     height in any way.  */
+
+	  if (it.current_y != it.last_visible_y)
+	    change_height_p = true;
+	}
+      else
+	{
+	  height = max (1, (it.last_visible_y - border) / rows);
+	  extra = it.last_visible_y - border - height * rows;
+
+	  while (it.current_y < it.last_visible_y)
 	    {
-	      h = (extra + rows - 1) / rows;
-	      extra -= h;
+	      int h = 0;
+	      if (extra > 0 && rows-- > 0)
+		{
+		  h = (extra + rows - 1) / rows;
+		  extra -= h;
+		}
+	  
+	      display_tool_bar_line (&it, height + h);
 	    }
-	  display_tool_bar_line (&it, height + h);
 	}
     }
   else
@@ -15456,8 +15613,6 @@ redisplay_tool_bar (struct frame *f)
 
   if (!NILP (Vauto_resize_tool_bars))
     {
-      bool change_height_p = false;
-
       /* If we couldn't display everything, change the tool-bar's
 	 height if there is room for more.  */
       if (IT_STRING_CHARPOS (it) < it.end_charpos)
@@ -16516,8 +16671,9 @@ redisplay_internal (void)
   enum {MAX_GARBAGED_FRAME_RETRIES = 2 };
   int garbaged_frame_retries = 0;
 
-  /* True means redisplay has to consider all windows on all
-     frames.  False, only selected_window is considered.  */
+  /* False means that only the selected_window needs to be updated.
+     True means that other windows may need to be updated as well,
+     so we need to consult `needs_no_update` for all windows.  */
   bool consider_all_windows_p;
 
   /* True means redisplay has to redisplay the miniwindow.  */
@@ -16594,7 +16750,7 @@ redisplay_internal (void)
 	 display area, displaying a different frame means redisplay
 	 the whole thing.  */
       SET_FRAME_GARBAGED (sf);
-#ifndef DOS_NT
+#if !defined DOS_NT && !defined HAVE_ANDROID
       set_tty_color_mode (FRAME_TTY (sf), sf);
 #endif
       FRAME_TTY (sf)->previous_frame = sf;
@@ -16609,7 +16765,7 @@ redisplay_internal (void)
     {
       struct frame *f = XFRAME (frame);
 
-      if (FRAME_VISIBLE_P (f))
+      if (FRAME_REDISPLAY_P (f))
 	{
 	  ++number_of_visible_frames;
 	  /* Adjust matrices for visible frames only.  */
@@ -16751,7 +16907,7 @@ redisplay_internal (void)
       && !w->update_mode_line
       && !current_buffer->clip_changed
       && !current_buffer->prevent_redisplay_optimizations_p
-      && FRAME_VISIBLE_P (XFRAME (w->frame))
+      && FRAME_REDISPLAY_P (XFRAME (w->frame))
       && !FRAME_OBSCURED_P (XFRAME (w->frame))
       && !XFRAME (w->frame)->cursor_type_changed
       && !XFRAME (w->frame)->face_change
@@ -17029,7 +17185,7 @@ redisplay_internal (void)
 	      if (gcscrollbars && FRAME_TERMINAL (f)->condemn_scroll_bars_hook)
 		FRAME_TERMINAL (f)->condemn_scroll_bars_hook (f);
 
-	      if (FRAME_VISIBLE_P (f) && !FRAME_OBSCURED_P (f))
+	      if (FRAME_REDISPLAY_P (f) && !FRAME_OBSCURED_P (f))
 		{
 		  /* Don't allow freeing images and faces for this
 		     frame as long as the frame's update wasn't
@@ -17055,7 +17211,7 @@ redisplay_internal (void)
 	      if (gcscrollbars && FRAME_TERMINAL (f)->judge_scroll_bars_hook)
 		FRAME_TERMINAL (f)->judge_scroll_bars_hook (f);
 
-	      if (FRAME_VISIBLE_P (f) && !FRAME_OBSCURED_P (f))
+	      if (FRAME_REDISPLAY_P (f) && !FRAME_OBSCURED_P (f))
 		{
 		  /* If fonts changed on visible frame, display again.  */
 		  if (f->fonts_changed)
@@ -17161,7 +17317,7 @@ redisplay_internal (void)
 	    }
 	}
     }
-  else if (FRAME_VISIBLE_P (sf) && !FRAME_OBSCURED_P (sf))
+  else if (FRAME_REDISPLAY_P (sf) && !FRAME_OBSCURED_P (sf))
     {
       sf->inhibit_clear_image_cache = true;
       displayed_buffer = XBUFFER (XWINDOW (selected_window)->contents);
@@ -17212,7 +17368,7 @@ redisplay_internal (void)
 	unrequest_sigio ();
       STOP_POLLING;
 
-      if (FRAME_VISIBLE_P (sf) && !FRAME_OBSCURED_P (sf))
+      if (FRAME_REDISPLAY_P (sf) && !FRAME_OBSCURED_P (sf))
 	{
           if (hscroll_retries <= MAX_HSCROLL_RETRIES
               && hscroll_windows (selected_window))
@@ -17311,7 +17467,7 @@ redisplay_internal (void)
 
       FOR_EACH_FRAME (tail, frame)
 	{
-	  if (XFRAME (frame)->visible)
+	  if (FRAME_REDISPLAY_P (XFRAME (frame)))
 	    new_count++;
 	}
 
@@ -17435,6 +17591,9 @@ static void
 mark_window_display_accurate_1 (struct window *w, bool accurate_p)
 {
   struct buffer *b = XBUFFER (w->contents);
+#ifdef HAVE_TEXT_CONVERSION
+  ptrdiff_t prev_point, prev_mark;
+#endif /* HAVE_TEXT_CONVERSION */
 
   w->last_modified = accurate_p ? BUF_MODIFF (b) : 0;
   w->last_overlay_modified = accurate_p ? BUF_OVERLAY_MODIFF (b) : 0;
@@ -17464,12 +17623,59 @@ mark_window_display_accurate_1 (struct window *w, bool accurate_p)
       w->last_cursor_vpos = w->cursor.vpos;
       w->last_cursor_off_p = w->cursor_off_p;
 
+#ifdef HAVE_TEXT_CONVERSION
+      prev_point = w->last_point;
+      prev_mark = w->last_mark;
+#endif /* HAVE_TEXT_CONVERSION */
+
       if (w == XWINDOW (selected_window))
 	w->last_point = BUF_PT (b);
       else
 	w->last_point = marker_position (w->pointm);
 
-      w->window_end_valid = true;
+      /* w->last_mark is recorded for text conversion purposes.
+         Input methods aren't interested in the value of the mark
+         if it is inactive, so set it to -1 if it's not.  */
+
+      if (XMARKER (BVAR (b, mark))->buffer == b
+	  && !NILP (BVAR (b, mark_active)))
+	w->last_mark = marker_position (BVAR (b, mark));
+      else
+	w->last_mark = -1;
+
+#ifdef HAVE_TEXT_CONVERSION
+      /* See the description of this field in struct window.  */
+      w->ephemeral_last_point = w->last_point;
+
+      /* Point motion is only propagated to the input method for use
+	 in text conversion during a redisplay.  While this can lead
+	 to inconsistencies when point has moved but the change has
+	 not yet been displayed, it leads to better results most of
+	 the time, as point often changes within calls to
+	 `save-excursion', and the only way to detect such calls is to
+	 observe that the next redisplay never ends with those changes
+	 applied.
+
+         Changes to buffer text are immediately propagated to the
+         input method, and the position of point is also updated
+         during such a change, so the consequences are not that
+         severe.  */
+
+      if ((prev_point != w->last_point
+	   || prev_mark != w->last_mark)
+	  && FRAME_WINDOW_P (WINDOW_XFRAME (w))
+	  && w == XWINDOW (WINDOW_XFRAME (w)->selected_window))
+	report_point_change (WINDOW_XFRAME (w), w, b);
+#endif /* HAVE_TEXT_CONVERSION */
+
+      struct glyph_row *row;
+      /* These conditions should be consistent with CHECK_WINDOW_END.  */
+      if (w->window_end_vpos < w->current_matrix->nrows
+	  && ((row = MATRIX_ROW (w->current_matrix, w->window_end_vpos),
+	       !row->enabled_p
+	       || MATRIX_ROW_DISPLAYS_TEXT_P (row)
+	       || MATRIX_ROW_VPOS (row, w->current_matrix) == 0)))
+	w->window_end_valid = true;
       w->update_mode_line = false;
       w->preserve_vscroll_p = false;
     }
@@ -26521,17 +26727,18 @@ display_menu_bar (struct window *w)
   init_iterator (&it, w, -1, -1, f->desired_matrix->rows, MENU_FACE_ID);
   it.first_visible_x = 0;
   it.last_visible_x = FRAME_PIXEL_WIDTH (f);
-#elif defined (HAVE_X_WINDOWS) /* X without toolkit.  */
+#elif defined (HAVE_X_WINDOWS) || defined (HAVE_ANDROID)
+  struct window *menu_window = NULL;
+  struct face *face = FACE_FROM_ID (f, MENU_FACE_ID);
+
   if (FRAME_WINDOW_P (f))
     {
       /* Menu bar lines are displayed in the desired matrix of the
 	 dummy window menu_bar_window.  */
-      struct window *menu_w;
-      menu_w = XWINDOW (f->menu_bar_window);
-      init_iterator (&it, menu_w, -1, -1, menu_w->desired_matrix->rows,
+      menu_window = XWINDOW (f->menu_bar_window);
+      init_iterator (&it, menu_window, -1, -1,
+		     menu_window->desired_matrix->rows,
 		     MENU_FACE_ID);
-      it.first_visible_x = 0;
-      it.last_visible_x = FRAME_PIXEL_WIDTH (f);
     }
   else
 #endif /* not USE_X_TOOLKIT and not USE_GTK */
@@ -26585,7 +26792,60 @@ display_menu_bar (struct window *w)
 
   /* Compute the total height of the lines.  */
   compute_line_metrics (&it);
+  it.glyph_row->full_width_p = true;
+  it.glyph_row->continued_p = false;
+  it.glyph_row->truncated_on_left_p = false;
+  it.glyph_row->truncated_on_right_p = false;
+
+  /* This will break the moment someone tries to add another window
+     system that uses the no toolkit menu bar.  Oh well.  At least
+     there will be an error, meaning he will correct the ifdef inside
+     which `face' is defined.  */
+#if defined HAVE_WINDOW_SYSTEM && !defined HAVE_EXT_MENU_BAR
+  /* Make a 3D menu bar have a shadow at its right end.  */
+  extend_face_to_end_of_line (&it);
+  if (face->box != FACE_NO_BOX)
+    {
+      struct glyph *last = (it.glyph_row->glyphs[TEXT_AREA]
+			    + it.glyph_row->used[TEXT_AREA] - 1);
+      int box_thickness = face->box_vertical_line_width;
+      last->right_box_line_p = true;
+      /* Add back the space for the right box line we subtracted in
+	 init_iterator, since the right_box_line_p flag will make the
+	 glyph wider.  We actually add only as much space as is
+	 available for the last glyph of the menu bar and whatever
+	 space is left beyond it, since that glyph could be only
+	 partially visible.  */
+      if (box_thickness > 0)
+	last->pixel_width += max (0, (box_thickness
+				      - (it.current_x - it.last_visible_x)));
+    }
+
+  /* With the non-toolkit version, modify the menu bar window height
+     accordingly.  */
+  if (FRAME_WINDOW_P (it.f) && menu_window)
+    {
+      struct glyph_row *row;
+      int delta_height;
+
+      row = it.glyph_row;
+      delta_height
+	= ((row->y + row->height)
+	   - WINDOW_BOX_HEIGHT_NO_MODE_LINE (menu_window));
+
+      if (delta_height != 0)
+        {
+	  FRAME_MENU_BAR_HEIGHT (it.f) += delta_height;
+	  adjust_frame_size (it.f, -1, -1, 3, false, Qmenu_bar_lines);
+	}
+    }
+#endif
 }
+
+/* This code is never used on Android where there are only GUI and
+   initial frames.  */
+
+#ifndef HAVE_ANDROID
 
 /* Deep copy of a glyph row, including the glyphs.  */
 static void
@@ -26707,6 +26967,9 @@ display_tty_menu_item (const char *item_text, int width, int face_id,
   row->full_width_p = saved_width;
   row->reversed_p = saved_reversed;
 }
+
+#endif
+
 
 /***********************************************************************
 			      Mode Line
@@ -27768,7 +28031,9 @@ static const char power_letter[] =
     'P', /* peta */
     'E', /* exa */
     'Z', /* zetta */
-    'Y'	 /* yotta */
+    'Y', /* yotta */
+    'R', /* ronna */
+    'Q'  /* quetta */
   };
 
 static void
@@ -28201,9 +28466,8 @@ decode_mode_spec (struct window *w, register int c, int field_width,
 	    ptrdiff_t position;
 	    ptrdiff_t distance
 	      = (line_number_display_limit_width < 0 ? 0
-		 : INT_MULTIPLY_WRAPV (line_number_display_limit_width,
-				       height * 2 + 30,
-				       &distance)
+		 : ckd_mul (&distance, line_number_display_limit_width,
+			    height * 2 + 30)
 		 ? PTRDIFF_MAX : distance);
 
 	    if (startpos - distance > limit)
@@ -28754,7 +29018,11 @@ display_string (const char *string, Lisp_Object lisp_string, Lisp_Object face_st
 	{
 	  /* Add truncation mark, but don't do it if the line is
 	     truncated at a padding space.  */
-	  if (it_charpos < it->string_nchars)
+	  /* Need to do the below for the last string character as
+	     well, since it could be a double-width character, in
+	     which case the previous character ends before
+	     last_visible_x.  Thus, comparison with <=, not <.  */
+	  if (it_charpos <= it->string_nchars)
 	    {
 	      if (!FRAME_WINDOW_P (it->f))
 		{
@@ -28762,6 +29030,18 @@ display_string (const char *string, Lisp_Object lisp_string, Lisp_Object face_st
 
 		  if (it->current_x > it->last_visible_x)
 		    {
+		      /* This flag is true if we are displaying mode
+			 line, false for header-line or tab-line.  */
+		      bool mode_line_p = false;
+
+		      /* ROW->mode_line_p is true if we display mode
+			 line or header-line or tab-line.  */
+		      if (row->mode_line_p)
+			{
+			  struct window *w = it->w;
+			  if (row == MATRIX_MODE_LINE_ROW (w->desired_matrix))
+			    mode_line_p = true;
+			}
 		      if (!row->reversed_p)
 			{
 			  for (ii = row->used[TEXT_AREA] - 1; ii > 0; --ii)
@@ -28779,7 +29059,10 @@ display_string (const char *string, Lisp_Object lisp_string, Lisp_Object face_st
 		      for (n = row->used[TEXT_AREA]; ii < n; ++ii)
 			{
 			  row->used[TEXT_AREA] = ii;
-			  produce_special_glyphs (it, IT_TRUNCATION);
+			  if (row->mode_line_p)
+			    pad_mode_line (it, mode_line_p);
+			  else
+			    produce_special_glyphs (it, IT_TRUNCATION);
 			}
 		    }
 		  produce_special_glyphs (it, IT_TRUNCATION);
@@ -29014,7 +29297,9 @@ calc_pixel_width_or_height (double *res, struct it *it, Lisp_Object prop,
       /* 'width': the width of FONT.  */
       if (EQ (prop, Qwidth))
 	return OK_PIXELS (font
-			  ? FONT_WIDTH (font)
+			  ? (font->average_width
+			     ? font->average_width
+			     : font->space_width)
 			  : FRAME_COLUMN_WIDTH (it->f));
 #else
       if (EQ (prop, Qheight) || EQ (prop, Qwidth))
@@ -31605,6 +31890,38 @@ produce_special_glyphs (struct it *it, enum display_element_type what)
   it->nglyphs = temp_it.nglyphs;
 }
 
+/* Produce padding glyphs for mode/header/tab-line whose text needs to
+   be truncated.  This is used when the last visible character leaves
+   one or more columns till the window edge, but the next character is
+   wider than that number of columns, and therefore cannot fit on the
+   line.  We then replace these columns with the appropriate padding
+   character: '-' for the mode line and SPC for the other two.  That's
+   because these lines should not show the usual truncation glyphs
+   there.  This function is only used on TTY frames.  */
+static void
+pad_mode_line (struct it *it, bool mode_line_p)
+{
+  struct it temp_it;
+  GLYPH glyph;
+
+  eassert (!FRAME_WINDOW_P (it->f));
+  temp_it = *it;
+  temp_it.object = Qnil;
+  memset (&temp_it.current, 0, sizeof temp_it.current);
+
+  SET_GLYPH (glyph, mode_line_p ? '-' : ' ', it->base_face_id);
+
+  temp_it.dp = NULL;
+  temp_it.what = IT_CHARACTER;
+  temp_it.c = temp_it.char_to_display = GLYPH_CHAR (glyph);
+  temp_it.face_id = GLYPH_FACE (glyph);
+  temp_it.len = CHAR_BYTES (temp_it.c);
+
+  PRODUCE_GLYPHS (&temp_it);
+  it->pixel_width = temp_it.pixel_width;
+  it->nglyphs = temp_it.nglyphs;
+}
+
 #ifdef HAVE_WINDOW_SYSTEM
 
 /* Calculate line-height and line-spacing properties.
@@ -33416,7 +33733,7 @@ display_and_set_cursor (struct window *w, bool on,
      windows and frames; in the latter case, the frame or window may
      be in the midst of changing its size, and x and y may be off the
      window.  */
-  if (! FRAME_VISIBLE_P (f)
+  if (! FRAME_REDISPLAY_P (f)
       || vpos >= w->current_matrix->nrows
       || hpos >= w->current_matrix->matrix_w)
     return;
@@ -33577,7 +33894,7 @@ gui_update_cursor (struct frame *f, bool on_p)
 void
 gui_clear_cursor (struct window *w)
 {
-  if (FRAME_VISIBLE_P (XFRAME (w->frame)) && w->phys_cursor_on_p)
+  if (FRAME_REDISPLAY_P (XFRAME (w->frame)) && w->phys_cursor_on_p)
     update_window_cursor (w, false);
 }
 
@@ -33598,7 +33915,9 @@ draw_row_with_mouse_face (struct window *w, int start_x, struct glyph_row *row,
     }
 #endif
 
+#ifndef HAVE_ANDROID
   tty_draw_row_with_mouse_face (w, row, start_hpos, end_hpos, draw);
+#endif
 }
 
 /* Display the active region described by mouse_face_* according to DRAW.  */
@@ -35089,7 +35408,8 @@ note_mouse_highlight (struct frame *f, int x, int y)
   struct buffer *b;
 
   /* When a menu is active, don't highlight because this looks odd.  */
-#if defined (HAVE_X_WINDOWS) || defined (HAVE_NS) || defined (MSDOS)
+#if defined (HAVE_X_WINDOWS) || defined (HAVE_NS) || defined (MSDOS) \
+  || defined (HAVE_ANDROID)
   if (popup_activated ())
     return;
 #endif
@@ -36270,14 +36590,10 @@ expose_frame (struct frame *f, int x, int y, int w, int h)
       |= expose_window (XWINDOW (f->tool_bar_window), &r);
 #endif
 
-#ifdef HAVE_X_WINDOWS
-#ifndef MSDOS
-#if ! defined (USE_X_TOOLKIT) && ! defined (USE_GTK)
+#if defined HAVE_WINDOW_SYSTEM && !defined HAVE_EXT_MENU_BAR
   if (WINDOWP (f->menu_bar_window))
     mouse_face_overwritten_p
       |= expose_window (XWINDOW (f->menu_bar_window), &r);
-#endif /* not USE_X_TOOLKIT and not USE_GTK */
-#endif
 #endif
 
   /* Some window managers support a focus-follows-mouse style with
@@ -36359,6 +36675,55 @@ gui_intersect_rectangles (const Emacs_Rectangle *r1, const Emacs_Rectangle *r2,
     }
 
   return intersection_p;
+}
+
+/* EXPORT:
+   Determine the union of the rectangles A and B.  Return the smallest
+   rectangle encompassing both the bounds of A and B in *RESULT.  It
+   is safe for all three arguments to point to each other.  */
+
+void
+gui_union_rectangles (const Emacs_Rectangle *a, const Emacs_Rectangle *b,
+		      Emacs_Rectangle *result)
+{
+  struct gui_box a_box, b_box, result_box;
+
+  /* Handle special cases where one of the rectangles is empty.  */
+
+  if (!a->width || !a->height)
+    {
+      *result = *b;
+      return;
+    }
+  else if (!b->width || !b->height)
+    {
+      *result = *a;
+      return;
+    }
+
+  /* Convert A and B to boxes.  */
+  a_box.x1 = a->x;
+  a_box.y1 = a->y;
+  a_box.x2 = a->x + a->width;
+  a_box.y2 = a->y + a->height;
+
+  b_box.x1 = b->x;
+  b_box.y1 = b->y;
+  b_box.x2 = b->x + b->width;
+  b_box.y2 = b->y + b->height;
+
+  /* Compute the union of the boxes.  */
+  result_box.x1 = min (a_box.x1, b_box.x1);
+  result_box.y1 = min (a_box.y1, b_box.y1);
+  result_box.x2 = max (a_box.x2, b_box.x2);
+  result_box.y2 = max (a_box.y2, b_box.y2);
+
+  /* Convert result_box to an XRectangle and put the result in
+     RESULT.  */
+  result->x = result_box.x1;
+  result->y = result_box.y1;
+  result->width = result_box.x2 - result_box.x1;
+  result->height = result_box.y2 - result_box.y1;
 }
 
 #endif /* HAVE_WINDOW_SYSTEM */
@@ -37391,9 +37756,12 @@ may be more familiar to users.  */);
   display_raw_bytes_as_hex = false;
 
   DEFVAR_BOOL ("mouse-fine-grained-tracking", mouse_fine_grained_tracking,
-    doc: /* Non-nil for pixel-wise mouse-movement.
+    doc: /* Non-nil for pixelwise mouse-movement.
 When nil, mouse-movement events will not be generated as long as the
-mouse stays within the extent of a single glyph (except for images).  */);
+mouse stays within the extent of a single glyph (except for images).
+When nil and `mouse-prefer-closest-glyph' is non-nil, mouse-movement
+events will instead not be generated as long as the mouse stays within
+the extent of a single left/right half glyph (except for images).  */);
   mouse_fine_grained_tracking = false;
 
   DEFVAR_BOOL ("tab-bar--dragging-in-progress", tab_bar__dragging_in_progress,
@@ -37475,7 +37843,7 @@ init_xdisp (void)
       r->pixel_top = r->top_line * FRAME_LINE_HEIGHT (f);
       r->total_cols = FRAME_COLS (f);
       r->pixel_width = r->total_cols * FRAME_COLUMN_WIDTH (f);
-      r->total_lines = FRAME_TOTAL_LINES (f) - 1 - FRAME_TOP_MARGIN (f);
+      r->total_lines = FRAME_TOTAL_LINES (f) - 1 - FRAME_MARGINS (f);
       r->pixel_height = r->total_lines * FRAME_LINE_HEIGHT (f);
 
       m->top_line = FRAME_TOTAL_LINES (f) - 1;

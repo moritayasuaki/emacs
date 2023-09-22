@@ -378,10 +378,8 @@ If so, and variable `package-check-signature' is
 `allow-unsigned', return `allow-unsigned', otherwise return the
 value of variable `package-check-signature'."
   (if (eq package-check-signature 'allow-unsigned)
-      (progn
-        (require 'epg-config)
-        (and (epg-find-configuration 'OpenPGP)
-             'allow-unsigned))
+      (and (epg-find-configuration 'OpenPGP)
+           'allow-unsigned)
     package-check-signature))
 
 (defcustom package-unsigned-archives nil
@@ -611,7 +609,7 @@ package."
   (package-archive-priority (package-desc-archive pkg-desc)))
 
 (defun package--parse-elpaignore (pkg-desc)
-  "Return the of regular expression to match files ignored by PKG-DESC."
+  "Return a list of regular expressions to match files ignored by PKG-DESC."
   (let* ((pkg-dir (file-name-as-directory (package-desc-dir pkg-desc)))
          (ignore (expand-file-name ".elpaignore" pkg-dir))
          files)
@@ -903,13 +901,7 @@ correspond to previously loaded files."
         (when reload
           (package--reload-previously-loaded pkg-desc))
         (with-demoted-errors "Error loading autoloads: %s"
-          (load (package--autoloads-file-name pkg-desc) nil t))
-        ;; FIXME: Since 2013 (commit 4fac34cee97a), the autoload files take
-        ;; care of changing the `load-path', so maybe it's time to
-        ;; remove this fallback code?
-        (unless (or (member (file-name-as-directory pkg-dir) load-path)
-                    (member (directory-file-name pkg-dir) load-path))
-          (add-to-list 'load-path pkg-dir)))
+          (load (package--autoloads-file-name pkg-desc) nil t)))
       ;; Add info node.
       (when (file-exists-p (expand-file-name "dir" pkg-dir))
         ;; FIXME: not the friendliest, but simple.
@@ -970,7 +962,6 @@ Newer versions are always activated, regardless of FORCE."
   "Untar the current buffer.
 This uses `tar-untar-buffer' from Tar mode.  All files should
 untar into a directory named DIR; otherwise, signal an error."
-  (require 'tar-mode)
   (tar-mode)
   ;; Make sure everything extracts into DIR.
   (let ((regexp (concat "\\`" (regexp-quote (expand-file-name dir)) "/"))
@@ -1200,7 +1191,7 @@ boundaries."
     ;; the earliest in version 31.1.  The idea is to phase out the
     ;; requirement for a "footer line" without unduly impacting users
     ;; on earlier Emacs versions.  See Bug#26490 for more details.
-    (unless (search-forward (concat ";;; " file-name ".el ends here"))
+    (unless (search-forward (concat ";;; " file-name ".el ends here") nil 'move)
       (lwarn '(package package-format) :warning
              "Package lacks a terminating comment"))
     ;; Try to include a trailing newline.
@@ -1228,8 +1219,8 @@ boundaries."
        :url website
        :keywords keywords
        :maintainer
-       ;; For backward compatibility, use a single string if there's only
-       ;; one maintainer (the most common case).
+       ;; For backward compatibility, use a single cons-cell if
+       ;; there's only one maintainer (the most common case).
        (let ((maints (lm-maintainers))) (if (cdr maints) maints (car maints)))
        :authors (lm-authors)))))
 
@@ -1237,15 +1228,14 @@ boundaries."
   "Read a `define-package' form in current buffer.
 Return the pkg-desc, with desc-kind set to KIND."
   (goto-char (point-min))
-  (unwind-protect
-      (let* ((pkg-def-parsed (read (current-buffer)))
-             (pkg-desc
-              (when (eq (car pkg-def-parsed) 'define-package)
-                (apply #'package-desc-from-define
-                  (append (cdr pkg-def-parsed))))))
-        (when pkg-desc
-          (setf (package-desc-kind pkg-desc) kind)
-          pkg-desc))))
+  (let* ((pkg-def-parsed (read (current-buffer)))
+         (pkg-desc
+          (when (eq (car pkg-def-parsed) 'define-package)
+            (apply #'package-desc-from-define
+                   (append (cdr pkg-def-parsed))))))
+    (when pkg-desc
+      (setf (package-desc-kind pkg-desc) kind)
+      pkg-desc)))
 
 (declare-function tar-get-file-descriptor "tar-mode" (file))
 (declare-function tar--extract "tar-mode" (descriptor))
@@ -2268,25 +2258,26 @@ had been enabled."
 
 ;;;###autoload
 (defun package-upgrade (name)
-  "Upgrade package NAME if a newer version exists.
-
-Currently, packages which are part of the Emacs distribution
-cannot be upgraded that way.  To enable upgrades of such a
-package using this command, first upgrade the package to a
-newer version from ELPA by using `\\<package-menu-mode-map>\\[package-menu-mark-install]' after `\\[list-packages]'."
+  "Upgrade package NAME if a newer version exists."
   (interactive
    (list (completing-read
-          "Upgrade package: " (package--upgradeable-packages) nil t)))
+          "Upgrade package: " (package--upgradeable-packages t) nil t)))
   (let* ((package (if (symbolp name)
                       name
                     (intern name)))
-         (pkg-desc (cadr (assq package package-alist))))
-    (if (package-vc-p pkg-desc)
+         (pkg-desc (cadr (assq package package-alist)))
+         (package-install-upgrade-built-in (not pkg-desc)))
+    ;; `pkg-desc' will be nil when the package is an "active built-in".
+    (if (and pkg-desc (package-vc-p pkg-desc))
         (package-vc-upgrade pkg-desc)
-      (package-delete pkg-desc 'force 'dont-unselect)
-      (package-install package 'dont-select))))
+      (when pkg-desc
+        (package-delete pkg-desc 'force 'dont-unselect))
+      (package-install package
+                       ;; An active built-in has never been "selected"
+                       ;; before.  Mark it as installed explicitly.
+                       (and pkg-desc 'dont-select)))))
 
-(defun package--upgradeable-packages ()
+(defun package--upgradeable-packages (&optional include-builtins)
   ;; Initialize the package system to get the list of package
   ;; symbols for completion.
   (package--archives-initialize)
@@ -2297,11 +2288,21 @@ newer version from ELPA by using `\\<package-menu-mode-map>\\[package-menu-mark-
       (or (let ((available
                  (assq (car elt) package-archive-contents)))
             (and available
-                 (version-list-<
-                  (package-desc-version (cadr elt))
-                  (package-desc-version (cadr available)))))
-          (package-vc-p (cadr (assq (car elt) package-alist)))))
-    package-alist)))
+                 (or (and
+                      include-builtins
+                      (not (package-desc-version (cadr elt))))
+                     (version-list-<
+                      (package-desc-version (cadr elt))
+                      (package-desc-version (cadr available))))))
+          (package-vc-p (cadr elt))))
+    (if include-builtins
+        (append package-alist
+                (mapcan
+                 (lambda (elt)
+                   (when (not (assq (car elt) package-alist))
+                     (list (list (car elt) (package--from-builtin elt)))))
+                 package--builtins))
+      package-alist))))
 
 ;;;###autoload
 (defun package-upgrade-all (&optional query)
@@ -2311,8 +2312,9 @@ interactively, QUERY is always true.
 
 Currently, packages which are part of the Emacs distribution are
 not upgraded by this command.  To enable upgrading such a package
-using this command, first upgrade  the package to a newer version
-from ELPA by using `\\<package-menu-mode-map>\\[package-menu-mark-install]' after `\\[list-packages]'."
+using this command, first upgrade the package to a newer version
+from ELPA by either using `\\[package-upgrade]' or
+`\\<package-menu-mode-map>\\[package-menu-mark-install]' after `\\[list-packages]'."
   (interactive (list (not noninteractive)))
   (package-refresh-contents)
   (let ((upgradeable (package--upgradeable-packages)))
@@ -2738,7 +2740,8 @@ Helper function for `describe-package'."
          (status (if desc (package-desc-status desc) "orphan"))
          (incompatible-reason (package--incompatible-p desc))
          (signed (if desc (package-desc-signed desc)))
-         (maintainer (cdr (assoc :maintainer extras)))
+         (maintainers (or (cdr (assoc :maintainers extras))
+                          (cdr (assoc :maintainer extras))))
          (authors (cdr (assoc :authors extras)))
          (news (and-let* (pkg-dir
                           ((not built-in))
@@ -2873,19 +2876,21 @@ Helper function for `describe-package'."
          'action 'package-keyword-button-action)
         (insert " "))
       (insert "\n"))
-    (when maintainer
-      (package--print-help-section "Maintainer")
-      (package--print-email-button maintainer))
-    (when authors
+    (when maintainers
+      (unless (proper-list-p maintainers)
+        (setq maintainers (list maintainers)))
       (package--print-help-section
-          (if (= (length authors) 1)
-              "Author"
-            "Authors"))
-      (package--print-email-button (pop authors))
-      ;; If there's more than one author, indent the rest correctly.
-      (dolist (name authors)
-        (insert (make-string 13 ?\s))
-        (package--print-email-button name)))
+          (if (cdr maintainers) "Maintainers" "Maintainer"))
+      (dolist (maintainer maintainers)
+        (when (bolp)
+          (insert (make-string 13 ?\s)))
+        (package--print-email-button maintainer)))
+    (when authors
+      (package--print-help-section (if (cdr authors) "Authors" "Author"))
+      (dolist (author authors)
+        (when (bolp)
+          (insert (make-string 13 ?\s)))
+        (package--print-email-button author)))
     (let* ((all-pkgs (append (cdr (assq name package-alist))
                              (cdr (assq name package-archive-contents))
                              (let ((bi (assq name package--builtins)))
@@ -3146,8 +3151,7 @@ The most useful commands here are:
         `[("Package" ,package-name-column-width package-menu--name-predicate)
           ("Version" ,package-version-column-width package-menu--version-predicate)
           ("Status"  ,package-status-column-width  package-menu--status-predicate)
-          ,@(if (cdr package-archives)
-                `(("Archive" ,package-archive-column-width package-menu--archive-predicate)))
+          ("Archive" ,package-archive-column-width package-menu--archive-predicate)
           ("Description" 0 package-menu--description-predicate)])
   (setq tabulated-list-padding 2)
   (setq tabulated-list-sort-key (cons "Status" nil))
@@ -3587,9 +3591,8 @@ Return (PKG-DESC [NAME VERSION STATUS DOC])."
                  (package-desc-version pkg)))
               'font-lock-face face)
             ,(propertize status 'font-lock-face face)
-            ,@(if (cdr package-archives)
-                  (list (propertize (or (package-desc-archive pkg) "")
-                                    'font-lock-face face)))
+            ,(propertize (or (package-desc-archive pkg) "")
+                                    'font-lock-face face)
             ,(propertize (package-desc-summary pkg)
                          'font-lock-face 'package-description)])))
 
@@ -4645,6 +4648,7 @@ will be signaled in that case."
         (package--print-email-button maint)
         (string-trim (substring-no-properties (buffer-string))))))))
 
+;;;###autoload
 (defun package-report-bug (desc)
   "Prepare a message to send to the maintainers of a package.
 DESC must be a `package-desc' object."

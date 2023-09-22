@@ -2862,7 +2862,7 @@ list, `literal' is for the format specifier L."
       (if lispp
 	  (if (eq lispp 'literal)
 	      elements
-	    (if (and (eq elements "") (not keep-empty))
+	    (if (and (equal elements "") (not keep-empty))
 		""
 	      (prin1-to-string
 	       (if numbers (string-to-number elements) elements))))
@@ -6134,9 +6134,13 @@ supported."
   (with-temp-buffer
     (insert (orgtbl-to-orgtbl table params))
     (org-table-align)
-    (replace-regexp-in-string
-     "-|" "-+"
-     (replace-regexp-in-string "|-" "+-" (buffer-substring 1 (buffer-size))))))
+    (goto-char (point-min))
+    (while (search-forward "-|" nil t)
+      (replace-match "-+"))
+    (goto-char (point-min))
+    (while (search-forward "|-" nil t)
+      (replace-match "+-"))
+    (buffer-string)))
 
 (defun orgtbl-to-unicode (table params)
   "Convert the `orgtbl-mode' TABLE into a table with unicode characters.

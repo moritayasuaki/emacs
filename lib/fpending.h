@@ -1,7 +1,7 @@
 /* Declare __fpending.
 
-   Copyright (C) 2000, 2003, 2005-2006, 2009-2023 Free Software
-   Foundation, Inc.
+   Copyright (C) 2000, 2003, 2005-2006, 2009-2023 Free Software Foundation,
+   Inc.
 
    This program is free software: you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -17,6 +17,12 @@
    along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
    Written by Jim Meyering.  */
+
+/* This file uses _GL_ATTRIBUTE_PURE, HAVE_STDIO_EXT_H,
+   HAVE_DECL___FPENDING.  */
+#if !_GL_CONFIG_H_INCLUDED
+ #error "Please include config.h first."
+#endif
 
 #include <stddef.h>
 #include <stdio.h>

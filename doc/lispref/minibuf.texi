@@ -1541,7 +1541,8 @@ that it uses the predicate @code{custom-variable-p} instead of
 @code{commandp}.
 @end defun
 
-@deffn Command read-color &optional prompt convert allow-empty display
+@deffn Command read-color &optional prompt convert allow-empty @
+  display foreground face
 This function reads a string that is a color specification, either the
 color's name or an RGB hex value such as @code{#RRRGGGBBB}.  It
 prompts with @var{prompt} (default: @code{"Color (name or #RGB triplet):"})
@@ -1561,6 +1562,13 @@ non-@code{nil} and the user enters null input.
 
 Interactively, or when @var{display} is non-@code{nil}, the return
 value is also displayed in the echo area.
+
+The optional arguments @var{foreground} and @var{face} control the
+appearence of the completion candidates in the @file{*Completions*}
+buffer.  The candidates are displayed in the specified @var{face} but
+with different colors: if @var{foreground} is non-@code{nil}, the
+foreground color is changed to be the color of the candidate,
+otherwise the background is changed to the candidate's color.
 @end deffn
 
   See also the functions @code{read-coding-system} and
@@ -2233,6 +2241,9 @@ the expected answers (@kbd{y}, @kbd{n}, @kbd{@key{SPC}},
 @kbd{@key{DEL}}, or something that quits), the function responds
 @samp{Please answer y or n.}, and repeats the request.
 
+If @var{prompt} is a non-empty string, and it ends with a non-space
+character, a @samp{SPC} character will be appended to it.
+
 This function actually uses the minibuffer, but does not allow editing
 of the answer.  The cursor moves to the minibuffer while the question
 is being asked.
@@ -2266,10 +2277,15 @@ minibuffer.  It returns @code{t} if the user enters @samp{yes},
 @code{nil} if the user types @samp{no}.  The user must type @key{RET} to
 finalize the response.  Upper and lower case are equivalent.
 
-@code{yes-or-no-p} starts by displaying @var{prompt} in the minibuffer,
-followed by @w{@samp{(yes or no) }}.  The user must type one of the
-expected responses; otherwise, the function responds @samp{Please answer
-yes or no.}, waits about two seconds and repeats the request.
+@vindex yes-or-no-prompt
+@code{yes-or-no-p} starts by displaying @var{prompt} in the
+minibuffer, followed by the value of @code{yes-or-no-prompt} @w{(default
+@samp{(yes or no) })}.  The user must type one of the expected
+responses; otherwise, the function responds @w{@samp{Please answer yes or
+no.}}, waits about two seconds and repeats the request.
+
+If @var{prompt} is a non-empty string, and it ends with a non-space
+character, a @samp{SPC} character will be appended to it.
 
 @code{yes-or-no-p} requires more work from the user than
 @code{y-or-n-p} and is appropriate for more crucial decisions.

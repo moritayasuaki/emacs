@@ -5374,7 +5374,7 @@ by a #."
 			  (zero-or-more (any " \t"))
 			  (group (group (zero-or-more (not (any " \t\n"))))
 				 (zero-or-more (any " \t"))
-				 (group (zero-or-more any)))))
+				 (group (zero-or-more nonl)))))
 	   limit t)
       (let ((beg (match-beginning 0))
 	    (end-of-beginline (match-end 0))
@@ -5400,7 +5400,7 @@ by a #."
 						    "#+end"
 						    ,(match-string 4)
 						    word-end
-						    (zero-or-more any)))))
+						    (zero-or-more nonl)))))
 		 ;; We look further than LIMIT on purpose.
 		 nil t)
 	    ;; We do have a matching #+end line.
@@ -5473,7 +5473,7 @@ by a #."
 	    (beginning-of-line)
 	    (looking-at (rx (group (zero-or-more (any " \t"))
 				   "#+caption"
-				   (optional "[" (zero-or-more any) "]")
+				   (optional "[" (zero-or-more nonl) "]")
 				   ":")
 			    (zero-or-more (any " \t")))))
 	  (add-text-properties (line-beginning-position) (match-end 1)
@@ -16437,7 +16437,7 @@ buffer boundaries with possible narrowing."
 (defun org-display-inline-remove-overlay (ov after _beg _end &optional _len)
   "Remove inline-display overlay if a corresponding region is modified."
   (when (and ov after)
-    (delete ov org-inline-image-overlays)
+    (setq org-inline-image-overlays (delete ov org-inline-image-overlays))
     ;; Clear image from cache to avoid image not updating upon
     ;; changing on disk.  See Emacs bug#59902.
     (when (overlay-get ov 'org-image-overlay)

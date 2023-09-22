@@ -12,10 +12,105 @@ This file is about changes in Eglot, the Emacs client for LSP
 (Language Server Protocol) distributed with GNU Emacs since Emacs
 version 29.1 and with GNU ELPA since 2018.
 
-Note: references to Eglot issues are presented as "github#nnnn".
-This refers to https://github.com/joaotavora/eglot/issues/.
-That is, to look up issue github#1234, go to
+Note: references to some Eglot issues are presented as "github#nnnn".
+This refers to https://github.com/joaotavora/eglot/issues/.  That is,
+to look up issue github#1234, go to
 https://github.com/joaotavora/eglot/issues/1234.
+
+
+* Changes in upcoming Eglot
+
+** Optimized file-watching capability
+
+Some servers, like the Pyright language server, issue too many file
+watching requests.  This change slightly reduces the number of file
+watcher objects requested from the operating system, which can be a
+problem, particularly on Mac OS.  See github#1228 and github#1226.
+
+** Fixed "onTypeFormatting" feature
+
+For 'newline' commands, Eglot sometimes sent the wrong character code
+to the server.  Also made this feature less chatty in the mode-line
+and messages buffer.
+
+
+* Changes in Eglot 1.15 (29/4/2023)
+
+** Fix LSP "languageId" detection
+
+Many servers today support multiple languages, meaning they can handle
+more than one file type in the same connection.  This relies on the
+client supplying a ':languageId' string.  Previously, Eglot calculated
+this string based on an imperfect heuristic and was often wrong.  See
+github#1206.
+
+** Fix problems with missing signature documentation (bug#62687)
+
+** Reworked 'eglot-imenu'
+
+Eglot's Imenu backend (used for M-x imenu among other extensions), has
+been reworked.  Most newer servers respond to
+'textDocument/documentSymbol' with a vector of 'DocumentSymbol', not
+'SymbolInformation'.  It's not worth it trying to make the two formats
+resemble each other.  This also lays groundwork supporting a
+forthcoming "breadcrumb" feature of bug#58431.
+
+** New command 'eglot-update'
+
+This allows users to easily update to the latest version of Eglot.
+
+
+* Changes in Eglot 1.14 (3/4/2023)
+
+** Faster, more responsive completion
+
+Eglot takes advantage of LSP's "isIncomplete" flag in responses to
+completion requests to drive new completion-caching mechanism for the
+duration of each completion session.  Once a full set of completions
+is obtained for a given position, the server needn't be contacted in
+many scenarios, resulting in significantly less communication
+overhead.  This works with the popular Company package and stock
+completion-at-point interfaces.
+
+A variable 'eglot-cache-session-completions', t by default, controls
+this.  The mechanism was tested with ccls, jdtls, pylsp, golsp and
+clangd.  Notably, the C/C++ language server Clangd version 15 has a
+bug in its "isIcomplete" flag (it is fixed in later versions).  If you
+run into problems, disable this mechanism like so:
+
+(add-hook 'c-common-mode-hook
+   (lambda () (setq-local eglot-cache-session-completions nil)))
+
+** At-point documentation less obtrusive in echo area
+
+Eglot takes advantage of new features of ElDoc to separate short
+documentation strings from large ones, sending the former to be shown in
+the ElDoc's echo area and the latter to be shown in other outlets,
+such as the *eldoc* buffer obtainable with 'C-h .'.
+
+** New variable 'eglot-prefer-plaintext'
+
+Customize this to t to opt-in to docstrings in plain text instead of
+Markdown.
+
+(bug#61373)
+
+** Progress indicators inhabit the mode-line by default
+
+To switch to the echo area, customize 'eglot-report-progress' to
+'messages'.  To switch off progress reporting completely, set to nil.
+
+** Snippet support is easier to enable
+
+The user needn't manually activate 'yas-minor-mode' or
+'yas-global-mode'.  If YASnippet is installed and the server supports
+snippets, it is used automatically, unless the symbol 'yasnippet' has
+been added to 'eglot-stay-out-of'.
+
+
+* Changes in Eglot 1.13 (15/03/2023)
+
+** ELPA installations on Emacs 26.3 are supported again.
 
 
 * Changes in Eglot 1.12.29 (Eglot bundled with Emacs 29.1)
@@ -26,6 +121,9 @@ The new command 'eglot-upgrade-eglot' allows easily grabbing the
 latest version of Eglot from ELPA.  This might be more convenient than
 using the more general command 'package-install', which by default
 will not upgrade "built-in" packages, those that come with Emacs.
+
+
+* Changes in Eglot 1.12 (13/03/2023)
 
 ** LSP inlay hints are now supported.
 Inlay hints are small text annotations not unlike diagnostics, but
@@ -335,7 +433,7 @@ This disconnects the server after last managed buffer is killed.
 
 (github#217, github#270)
 
-** Completion support support has been fixed.
+** Completion support has been fixed.
 Among other things, consider LSP's "filterText" cookies, which enable
 a kind of poor-man's flex-matching for some backends.
 
