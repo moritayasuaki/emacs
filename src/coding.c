@@ -651,6 +651,12 @@ growable_destination (struct coding_system *coding)
     consumed_chars++;					\
   } while (0)
 
+/* Suppress clang warnings about consumed_chars never being used.
+   Although correct, the warnings are too much trouble to code around.  */
+#if 13 <= __clang_major__ - defined __apple_build_version__
+# pragma clang diagnostic ignored "-Wunused-but-set-variable"
+#endif
+
 /* Safely get two bytes from the source text pointed by SRC which ends
    at SRC_END, and set C1 and C2 to those bytes while skipping the
    heading multibyte characters.  If there are not enough bytes in the
@@ -983,7 +989,7 @@ static void
 coding_alloc_by_realloc (struct coding_system *coding, ptrdiff_t bytes)
 {
   ptrdiff_t newbytes;
-  if (INT_ADD_WRAPV (coding->dst_bytes, bytes, &newbytes)
+  if (ckd_add (&newbytes, coding->dst_bytes, bytes)
       || SIZE_MAX < newbytes)
     string_overflow ();
   coding->destination = xrealloc (coding->destination, newbytes);
@@ -7053,9 +7059,8 @@ produce_chars (struct coding_system *coding, Lisp_Object translation_table,
 		{
 		  eassert (growable_destination (coding));
 		  ptrdiff_t dst_size;
-		  if (INT_MULTIPLY_WRAPV (to_nchars, MAX_MULTIBYTE_LENGTH,
-					  &dst_size)
-		      || INT_ADD_WRAPV (buf_end - buf, dst_size, &dst_size))
+		  if (ckd_mul (&dst_size, to_nchars, MAX_MULTIBYTE_LENGTH)
+		      || ckd_add (&dst_size, dst_size, buf_end - buf))
 		    memory_full (SIZE_MAX);
 		  dst = alloc_destination (coding, dst_size, dst);
 		  if (EQ (coding->src_object, coding->dst_object))
@@ -8489,7 +8494,7 @@ preferred_coding_system (void)
   return CODING_ID_NAME (id);
 }
 
-#if defined (WINDOWSNT) || defined (CYGWIN)
+#if defined (WINDOWSNT) || defined (CYGWIN) || defined HAVE_ANDROID
 
 Lisp_Object
 from_unicode (Lisp_Object str)
@@ -8507,10 +8512,31 @@ from_unicode (Lisp_Object str)
 Lisp_Object
 from_unicode_buffer (const wchar_t *wstr)
 {
+#if defined WINDOWSNT || defined CYGWIN
   /* We get one of the two final null bytes for free.  */
   ptrdiff_t len = 1 + sizeof (wchar_t) * wcslen (wstr);
   AUTO_STRING_WITH_LEN (str, (char *) wstr, len);
   return from_unicode (str);
+#else
+  /* This code is used only on Android, where little endian UTF-16
+     strings are extended to 32-bit wchar_t.  */
+
+  uint16_t *words;
+  size_t length, i;
+
+  length = wcslen (wstr) + 1;
+
+  USE_SAFE_ALLOCA;
+  SAFE_NALLOCA (words, sizeof *words, length);
+
+  for (i = 0; i < length - 1; ++i)
+    words[i] = wstr[i];
+
+  words[i] = '\0';
+  AUTO_STRING_WITH_LEN (str, (char *) words,
+			(length - 1) * sizeof *words);
+  return unbind_to (sa_count, from_unicode (str));
+#endif
 }
 
 wchar_t *
@@ -8530,7 +8556,7 @@ to_unicode (Lisp_Object str, Lisp_Object *buf)
   return WCSDATA (*buf);
 }
 
-#endif /* WINDOWSNT || CYGWIN */
+#endif /* WINDOWSNT || CYGWIN || HAVE_ANDROID */
 
 
 /*** 8. Emacs Lisp library functions ***/
@@ -11740,7 +11766,7 @@ syms_of_coding (void)
   DEFSYM (Qutf_8_unix, "utf-8-unix");
   DEFSYM (Qutf_8_emacs, "utf-8-emacs");
 
-#if defined (WINDOWSNT) || defined (CYGWIN)
+#if defined (WINDOWSNT) || defined (CYGWIN) || defined HAVE_ANDROID
   /* No, not utf-16-le: that one has a BOM.  */
   DEFSYM (Qutf_16le, "utf-16le");
 #endif

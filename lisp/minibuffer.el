@@ -973,10 +973,16 @@ Intended to be called via `clear-message-function'."
     (when (overlayp minibuffer-message-overlay)
       (delete-overlay minibuffer-message-overlay)
       (setq minibuffer-message-overlay nil)))
-
-  ;; Return nil telling the caller that the message
-  ;; should be also handled by the caller.
-  nil)
+  ;; Don't clear the message if touch screen drag-to-select is in
+  ;; progress, because a preview message might currently be displayed
+  ;; in the echo area.  FIXME: find some way to place this in
+  ;; touch-screen.el.
+  (if (and touch-screen-preview-select
+           (eq (nth 3 touch-screen-current-tool) 'drag))
+      'dont-clear-message
+    ;; Return nil telling the caller that the message
+    ;; should be also handled by the caller.
+    nil))
 
 (setq clear-message-function 'clear-minibuffer-message)
 
@@ -1117,11 +1123,7 @@ and DOC describes the way this style of completion works.")
 The available styles are listed in `completion-styles-alist'.
 
 Note that `completion-category-overrides' may override these
-styles for specific categories, such as files, buffers, etc.
-
-Note that Tramp host name completion (e.g., \"/ssh:ho<TAB>\")
-currently doesn't work if this list doesn't contain at least one
-of `basic', `emacs22' or `emacs21'."
+styles for specific categories, such as files, buffers, etc."
   :type completion--styles-type
   :version "23.1")
 
@@ -2409,7 +2411,11 @@ These include:
              (prefix (unless (zerop base-size) (substring string 0 base-size)))
              (base-prefix (buffer-substring (minibuffer--completion-prompt-end)
                                             (+ start base-size)))
-             (base-suffix (buffer-substring (point) (point-max)))
+             (base-suffix
+              (if (eq (alist-get 'category (cdr md)) 'file)
+                  (buffer-substring (save-excursion (or (search-forward "/" nil t) (point-max)))
+                                    (point-max))
+                ""))
              (all-md (completion--metadata (buffer-substring-no-properties
                                             start (point))
                                            base-size md
@@ -2957,7 +2963,10 @@ For customizing this mode, it is better to use
 `minibuffer-setup-hook' and `minibuffer-exit-hook' rather than
 the mode hook of this mode."
   :syntax-table nil
-  :interactive nil)
+  :interactive nil
+  ;; Enable text conversion, but always make sure `RET' does
+  ;; something.
+  (setq text-conversion-style 'action))
 
 ;;; Completion tables.
 
@@ -4496,26 +4505,13 @@ selected by these commands to the minibuffer."
 When `minibuffer-completion-auto-choose' is non-nil, then also
 insert the selected completion to the minibuffer."
   (interactive "p")
-  (let ((auto-choose minibuffer-completion-auto-choose)
-         (buf (current-buffer)))
+  (let ((auto-choose minibuffer-completion-auto-choose))
     (with-minibuffer-completions-window
       (when completions-highlight-face
         (setq-local cursor-face-highlight-nonselected-window t))
       (next-completion (or n 1))
       (when auto-choose
-        (let* ((completion-use-base-affixes t)
-               ;; Backported fix for bug#62700
-               (md
-                (with-current-buffer buf
-                  (completion--field-metadata (minibuffer--completion-prompt-end))))
-               (base-suffix
-                (if (eq (alist-get 'category (cdr md)) 'file)
-                    (with-current-buffer buf
-                      (buffer-substring
-                       (save-excursion (or (search-forward "/" nil t) (point-max)))
-                       (point-max)))
-                  ""))
-              (completion-base-affixes (list (car completion-base-affixes) base-suffix)))
+        (let ((completion-use-base-affixes t))
           (choose-completion nil t t))))))
 
 (defun minibuffer-previous-completion (&optional n)
@@ -4534,18 +4530,9 @@ of `completion-no-auto-exit'.
 If NO-QUIT is non-nil, insert the completion at point to the
 minibuffer, but don't quit the completions window."
   (interactive "P")
-  ;; Backported fix for bug#62700
-  (let* ((md (completion--field-metadata (minibuffer--completion-prompt-end)))
-         (base-suffix
-          (if (eq (alist-get 'category (cdr md)) 'file)
-              (buffer-substring
-               (save-excursion (or (search-forward "/" nil t) (point-max)))
-               (point-max))
-            "")))
     (with-minibuffer-completions-window
-      (let ((completion-use-base-affixes t)
-            (completion-base-affixes (list (car completion-base-affixes) base-suffix)))
-        (choose-completion nil no-exit no-quit)))))
+    (let ((completion-use-base-affixes t))
+      (choose-completion nil no-exit no-quit))))
 
 (defun minibuffer-complete-history ()
   "Complete the minibuffer history as far as possible.
@@ -4633,6 +4620,59 @@ is included in the return value."
                     (car default)
                   default)))
    ": "))
+
+
+;;; On screen keyboard support.
+;; Try to display the on screen keyboard whenever entering the
+;; mini-buffer, and hide it whenever leaving.
+
+(defvar minibuffer-on-screen-keyboard-timer nil
+  "Timer run upon exiting the minibuffer.
+It will hide the on screen keyboard when necessary.")
+
+(defvar minibuffer-on-screen-keyboard-displayed nil
+  "Whether or not the on-screen keyboard has been displayed.
+Set inside `minibuffer-setup-on-screen-keyboard'.")
+
+(defun minibuffer-setup-on-screen-keyboard ()
+  "Maybe display the on-screen keyboard in the current frame.
+Display the on-screen keyboard in the current frame if the
+last device to have sent an input event is not a keyboard.
+This is run upon minibuffer setup."
+  ;; Don't hide the on screen keyboard later on.
+  (when minibuffer-on-screen-keyboard-timer
+    (cancel-timer minibuffer-on-screen-keyboard-timer)
+    (setq minibuffer-on-screen-keyboard-timer nil))
+  (setq minibuffer-on-screen-keyboard-displayed nil)
+  (when (and (framep last-event-frame)
+             (not (memq (device-class last-event-frame
+                                      last-event-device)
+                        '(keyboard core-keyboard))))
+    (setq minibuffer-on-screen-keyboard-displayed
+          (frame-toggle-on-screen-keyboard (selected-frame) nil))))
+
+(defun minibuffer-exit-on-screen-keyboard ()
+  "Hide the on-screen keyboard if it was displayed.
+Hide the on-screen keyboard in a timer set to run in 0.1 seconds.
+It will be cancelled if the minibuffer is displayed again within
+that timeframe.
+
+Do not hide the on screen keyboard inside a recursive edit.
+Likewise, do not hide the on screen keyboard if point in the
+window that will be selected after exiting the minibuffer is not
+on read-only text.
+
+The latter is implemented in `touch-screen.el'."
+  (unless (or (not minibuffer-on-screen-keyboard-displayed)
+              (> (recursion-depth) 1))
+    (when minibuffer-on-screen-keyboard-timer
+      (cancel-timer minibuffer-on-screen-keyboard-timer))
+    (setq minibuffer-on-screen-keyboard-timer
+          (run-with-timer 0.1 nil #'frame-toggle-on-screen-keyboard
+                          (selected-frame) t))))
+
+(add-hook 'minibuffer-setup-hook #'minibuffer-setup-on-screen-keyboard)
+(add-hook 'minibuffer-exit-hook #'minibuffer-exit-on-screen-keyboard)
 
 (provide 'minibuffer)
 

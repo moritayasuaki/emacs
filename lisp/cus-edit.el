@@ -903,9 +903,9 @@ This also shows the saved values in the buffer."
 (defun custom-reset-standard-save-and-update ()
   "Save settings and redraw after erasing customizations."
   (when (or (and custom-reset-standard-variables-list
-		 (not (eq custom-reset-standard-variables-list  '(t))))
+		 (not (equal custom-reset-standard-variables-list  '(t))))
 	    (and custom-reset-standard-faces-list
-		 (not (eq custom-reset-standard-faces-list '(t)))))
+		 (not (equal custom-reset-standard-faces-list '(t)))))
     ;; Save settings to file.
     (custom-save-all)
     ;; Set state of and redraw variables.
@@ -1238,7 +1238,7 @@ Show the buffer in another window, but don't select it."
     (unless (eq symbol basevar)
       (message "`%s' is an alias for `%s'" symbol basevar))))
 
-(defvar customize-changed-options-previous-release "28.2"
+(defvar customize-changed-options-previous-release "29.1"
   "Version for `customize-changed' to refer back to by default.")
 
 ;; Packages will update this variable, so make it available.
@@ -2209,7 +2209,7 @@ and `face'."
 ;;; The `custom' Widget.
 
 (defface custom-button
-  '((((type x w32 ns haiku pgtk) (class color))	; Like default mode line
+  '((((type x w32 ns haiku pgtk android) (class color))	; Like default mode line
      :box (:line-width 2 :style released-button)
      :background "lightgrey" :foreground "black"))
   "Face for custom buffer buttons if `custom-raised-buttons' is non-nil."
@@ -2217,7 +2217,7 @@ and `face'."
   :group 'custom-faces)
 
 (defface custom-button-mouse
-  '((((type x w32 ns haiku pgtk) (class color))
+  '((((type x w32 ns haiku pgtk android) (class color))
      :box (:line-width 2 :style released-button)
      :background "grey90" :foreground "black")
     (t
@@ -2242,7 +2242,7 @@ and `face'."
       (if custom-raised-buttons 'custom-button-mouse 'highlight))
 
 (defface custom-button-pressed
-  '((((type x w32 ns haiku pgtk) (class color))
+  '((((type x w32 ns haiku pgtk android) (class color))
      :box (:line-width 2 :style pressed-button)
      :background "lightgrey" :foreground "black")
     (t :inverse-video t))
@@ -2330,6 +2330,7 @@ and `face'."
 	(from (marker-position (widget-get widget :from)))
 	(to (marker-position (widget-get widget :to))))
     (save-excursion
+      (custom-comment-preserve widget)
       (widget-value-set widget (widget-value widget))
       (custom-redraw-magic widget))
     (when (and (>= pos from) (<= pos to))
@@ -2509,7 +2510,9 @@ If INITIAL-STRING is non-nil, use that rather than \"Parent groups:\"."
   (let* ((null-comment (equal "" (widget-value widget))))
     (if (or (widget-get (widget-get widget :parent) :comment-shown)
 	    (not null-comment))
-	(widget-default-create widget)
+        (progn
+          (widget-default-create widget)
+          (widget-put (widget-get widget :parent) :comment-shown t))
       ;; `widget-default-delete' expects markers in these slots --
       ;; maybe it shouldn't.
       (widget-put widget :from (point-marker))
@@ -2541,6 +2544,14 @@ If INITIAL-STRING is non-nil, use that rather than \"Parent groups:\"."
   (let ((val (widget-value (widget-get widget :comment-widget))))
     (and (equal "" val)
 	 (not (widget-get widget :comment-shown)))))
+
+;; This is useful when we want to redraw a widget, but we want to preserve
+;; edits made by the user in the comment widget.  (See Bug#64649)
+(defun custom-comment-preserve (widget)
+  "Preserve the comment that belongs to WIDGET."
+  (when (widget-get widget :comment-shown)
+    (let ((comment-widget (widget-get widget :comment-widget)))
+      (widget-put comment-widget :value (widget-value comment-widget)))))
 
 ;;; The `custom-variable' Widget.
 
@@ -2821,12 +2832,16 @@ try matching its doc string against `custom-guess-doc-alist'."
 
       ;; The comment field
       (unless (eq state 'hidden)
-	(let* ((comment (get symbol 'variable-comment))
-	       (comment-widget
-		(widget-create-child-and-convert
-		 widget 'custom-comment
-		 :parent widget
-		 :value (or comment ""))))
+        (let ((comment-widget
+               (widget-create-child-and-convert
+                widget 'custom-comment
+                :parent widget
+                :value (or
+                        (and
+                         (widget-get widget :comment-shown)
+                         (widget-value (widget-get widget :comment-widget)))
+                        (get symbol 'variable-comment)
+                        ""))))
 	  (widget-put widget :comment-widget comment-widget)
 	  ;; Don't push it !!! Custom assumes that the first child is the
 	  ;; value one.
@@ -3538,6 +3553,10 @@ Pure-GTK interface.")
 					   :sibling-args (:help-echo "\
 Haiku interface.")
 					   haiku)
+                                    (const :format "Android "
+					   :sibling-args (:help-echo "\
+Android interface.")
+					   android)
 				    (const :format "DOS "
 					   :sibling-args (:help-echo "\
 Plain MS-DOS.")
@@ -3721,7 +3740,8 @@ WIDGET should be a `custom-face' widget."
 	 `((t ,(widget-value child)))
        (widget-value child)))))
 
-(defun custom-face-get-current-spec (face)
+(defun custom-face-get-current-spec-unfiltered (face)
+  "Return the current spec for face FACE, without filtering it."
   (let ((spec (or (get face 'customized-face)
 		  (get face 'saved-face)
 		  (get face 'face-defface-spec)
@@ -3732,7 +3752,11 @@ WIDGET should be a `custom-face' widget."
     ;; edit it as the user has specified it.
     (if (not (face-spec-match-p face spec (selected-frame)))
 	(setq spec `((t ,(face-attr-construct face (selected-frame))))))
-    (custom-pre-filter-face-spec spec)))
+    spec))
+
+(defun custom-face-get-current-spec (face)
+  "Return the current spec for face FACE, filtering it."
+  (custom-pre-filter-face-spec (custom-face-get-current-spec-unfiltered face)))
 
 (defun custom-toggle-hide-face (visibility-widget &rest _ignore)
   "Toggle the visibility of a `custom-face' parent widget.
@@ -3835,12 +3859,16 @@ the present value is saved to its :shown-value property instead."
 	 widget :visibility-widget 'custom-visibility)
 	;; The comment field
 	(unless hiddenp
-	  (let* ((comment (get symbol 'face-comment))
-		 (comment-widget
-		  (widget-create-child-and-convert
-		   widget 'custom-comment
-		   :parent widget
-		   :value (or comment ""))))
+	  (let ((comment-widget
+                 (widget-create-child-and-convert
+                  widget 'custom-comment
+                  :parent widget
+                  :value (or
+                          (and
+                           (widget-get widget :comment-shown)
+                           (widget-value (widget-get widget :comment-widget)))
+                          (get symbol 'face-comment)
+                          ""))))
 	    (widget-put widget :comment-widget comment-widget)
 	    (push comment-widget children))))
 
@@ -3852,8 +3880,8 @@ the present value is saved to its :shown-value property instead."
 	(unless (widget-get widget :custom-form)
 	  (widget-put widget :custom-form custom-face-default-form))
 
-	(let* ((spec (or (widget-get widget :shown-value)
-			 (custom-face-get-current-spec symbol)))
+	(let* ((shown-value (widget-get widget :shown-value))
+               (spec (or shown-value (custom-face-get-current-spec symbol)))
 	       (form (widget-get widget :custom-form))
 	       (indent (widget-get widget :indent))
 	       face-alist face-entry spec-default spec-match editor)
@@ -3894,7 +3922,7 @@ the present value is saved to its :shown-value property instead."
 		   widget 'sexp :value spec))))
           (push editor children)
           (widget-put widget :children children)
-	  (custom-face-state-set widget))))))
+	  (custom-face-state-set widget (not shown-value)))))))
 
 (defun cus--face-link (widget _format)
   (widget-create-child-and-convert
@@ -4014,13 +4042,18 @@ This is one of `set', `saved', `changed', `themed', or `rogue'."
 	'changed
       state)))
 
-(defun custom-face-state-set (widget)
+(defun custom-face-state-set (widget &optional no-filter)
   "Set the state of WIDGET, a custom-face widget.
 If the user edited the widget, set the state to modified.  If not, the new
-state is one of the return values of `custom-face-state'."
+state is one of the return values of `custom-face-state'.
+Optional argument NO-FILTER means to check against an unfiltered spec."
   (let ((face (widget-value widget)))
     (widget-put widget :custom-state
-                (if (face-spec-match-p face (custom-face-widget-to-spec widget))
+                (if (face-spec-match-p
+                     face
+                     (if no-filter
+                         (custom-face-get-current-spec-unfiltered face)
+                       (custom-face-widget-to-spec widget)))
                     (custom-face-state face)
                   'modified))))
 

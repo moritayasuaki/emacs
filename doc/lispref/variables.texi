@@ -1980,6 +1980,16 @@ this can be controlled by using this variable, which is a list of
 symbols.
 @end defvar
 
+@defvar safe-local-variable-directories
+This is a list of directories where local variables are always
+enabled.  Directory-local variables loaded from these directories,
+such as the variables in @file{.dir-locals.el}, will be enabled even
+if they are risky.  The directories in this list must be
+fully-expanded absolute file names.  They may also be remote
+directories if the variable @code{enable-remote-dir-locals} is set
+non-@code{nil}.
+@end defvar
+
 @defun hack-local-variables &optional handle-mode
 This function parses, and binds or evaluates as appropriate, any local
 variables specified by the contents of the current buffer.  The variable
@@ -2564,6 +2574,9 @@ documentation as @var{base-variable} has, if any, unless
 the documentation of the variable at the end of the chain of aliases.
 
 This function returns @var{base-variable}.
+
+If the resulting variable definition chain would be circular, then
+Emacs will signal a @code{cyclic-variable-indirection} error.
 @end defun
 
   Variable aliases are convenient for replacing an old name for a
@@ -2612,9 +2625,6 @@ look like:
 This function returns the variable at the end of the chain of aliases
 of @var{variable}.  If @var{variable} is not a symbol, or if @var{variable} is
 not defined as an alias, the function returns @var{variable}.
-
-This function signals a @code{cyclic-variable-indirection} error if
-there is a loop in the chain of symbols.
 @end defun
 
 @example

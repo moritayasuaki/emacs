@@ -482,6 +482,7 @@ non-nil."
   "When nil, `auto-save-visited-mode' will auto-save remote files.
 Any other value means that it will not."
   :group 'auto-save
+  :group 'tramp
   :type 'boolean
   :version "29.1")
 
@@ -555,8 +556,9 @@ using a transform that puts the lock files on a local file system."
   :version "28.1")
 
 (defcustom remote-file-name-inhibit-locks nil
-  "Whether to use file locks for remote files."
+  "Whether to create file locks for remote files."
   :group 'files
+  :group 'tramp
   :version "28.1"
   :type 'boolean)
 
@@ -681,7 +683,8 @@ The command \\[normal-mode], when used interactively,
 always obeys file local variable specifications and the -*- line,
 and ignores this variable.
 
-Also see the `permanently-enabled-local-variables' variable."
+Also see the `permanently-enabled-local-variables' and
+`safe-local-variable-directories' variables."
   :risky t
   :type '(choice (const :tag "Query Unsafe" t)
 		 (const :tag "Safe Only" :safe)
@@ -1267,7 +1270,9 @@ there is an existing connection.
 
 If CONNECTED is non-nil, return an identification only if FILE is
 located on a remote system and a connection is established to
-that remote system.
+that remote system.  If CONNECTED is `never', never use an
+existing connection to return the identification (this is
+otherwise like a value of nil).
 
 Tip: You can use this expansion of remote identifier components
      to derive a new remote file name from an existing one.  For
@@ -1316,6 +1321,7 @@ consecutive checks.  For example:
            (< 0 (file-attribute-size
                  (file-attributes (file-chase-links file)))))))"
   :group 'files
+  :group 'tramp
   :version "24.1"
   :type '(choice
           (const   :tag "Do not cache remote file attributes" t)
@@ -1323,6 +1329,22 @@ consecutive checks.  For example:
           (integer :tag "Cache remote file attributes with expiration"
                    :format "Cache expiry in seconds: %v"
 		   :value 10)))
+
+(defcustom remote-file-name-access-timeout nil
+  "Timeout (in seconds) for `access-file'.
+This timeout limits the time to check, whether a remote file is
+accessible.  `access-file' returns an error after that time.  If
+the value is 0 or nil, no timeout is used.
+
+This applies only when there isn't time spent for other actions,
+like reading passwords."
+  :group 'files
+  :group 'tramp
+  :version "30.1"
+  ;;:type '(choice :tag "Timeout (seconds)" natnum (const nil)))
+  :type '(choice
+	  (natnum :tag "Timeout (seconds)")
+          (const  :tag "Do not use timeout" nil)))
 
 (defun file-local-name (file)
   "Return the local name component of FILE.
@@ -2062,22 +2084,32 @@ killed."
 	  (kill-buffer obuf))))))
 
 ;; FIXME we really need to fold the uniquify stuff in here by default,
-;; not using advice, and add it to the doc string.
 (defun create-file-buffer (filename)
   "Create a suitably named buffer for visiting FILENAME, and return it.
 FILENAME (sans directory) is used unchanged if that name is free;
-otherwise a string <2> or <3> or ... is appended to get an unused name.
+otherwise the buffer is renamed according to
+`uniquify-buffer-name-style' to get an unused name.
 
 Emacs treats buffers whose names begin with a space as internal buffers.
 To avoid confusion when visiting a file whose name begins with a space,
 this function prepends a \"|\" to the final result if necessary."
-  (let* ((lastname (file-name-nondirectory filename))
-	 (lastname (if (string= lastname "")
-	               filename lastname))
-	 (buf (generate-new-buffer (if (string-prefix-p " " lastname)
-			               (concat "|" lastname)
-			             lastname))))
-    (uniquify--create-file-buffer-advice buf filename)
+  (let* ((lastname (file-name-nondirectory (directory-file-name filename)))
+         (lastname (if (string= lastname "") ; FILENAME is a root directory
+                       filename lastname))
+         (lastname (cond
+                    ((not (and uniquify-trailing-separator-p
+                               (file-directory-p filename)))
+                     lastname)
+                    ((eq uniquify-buffer-name-style 'forward)
+	             (file-name-as-directory lastname))
+	            ((eq uniquify-buffer-name-style 'reverse)
+	             (concat (or uniquify-separator "\\") lastname))
+                    (t lastname)))
+         (basename (if (string-prefix-p " " lastname)
+		       (concat "|" lastname)
+		     lastname))
+	 (buf (generate-new-buffer basename)))
+    (uniquify--create-file-buffer-advice buf filename basename)
     buf))
 
 (defvar abbreviated-home-dir nil
@@ -3696,6 +3728,18 @@ variable to set.")
   "A list of file-local variables that are always enabled.
 This overrides any `enable-local-variables' setting.")
 
+(defcustom safe-local-variable-directories '()
+  "A list of directories where local variables are always enabled.
+Directory-local variables loaded from these directories, such as the
+variables in .dir-locals.el, will be enabled even if they are risky.
+The names of the directories in the list must be absolute, and must
+end in a slash.  Remote directories can be included if the
+variable `enable-remote-dir-locals' is non-nil."
+  :version "30.1"
+  :type '(repeat string)
+  :risky t
+  :group 'find-file)
+
 (defun hack-local-variables-confirm (all-vars unsafe-vars risky-vars dir-name)
   "Get confirmation before setting up local variable values.
 ALL-VARS is the list of all variables to be set up.
@@ -3734,7 +3778,11 @@ n  -- to ignore the local variables list.")
 !  -- to apply the local variables list, and permanently mark these
       values (*) as safe (in the future, they will be set automatically.)
 i  -- to ignore the local variables list, and permanently mark these
-      values (*) as ignored\n\n")
+      values (*) as ignored"
+                    (if dir-name "
++  -- to apply the local variables list, and trust all directory-local
+      variables in this directory\n\n"
+                      "\n\n"))
 	  (insert "\n\n"))
 	(dolist (elt all-vars)
 	  (cond ((member elt unsafe-vars)
@@ -3758,7 +3806,11 @@ i  -- to ignore the local variables list, and permanently mark these
 	(pop-to-buffer buf '(display-buffer--maybe-at-bottom))
 	(let* ((exit-chars '(?y ?n ?\s))
 	       (prompt (format "Please type %s%s: "
-			       (if offer-save "y, n, ! or i" "y or n")
+			       (if offer-save
+                                   (if dir-name
+                                       "y, n, !, i, +"
+                                     "y, n, !, i")
+                                 "y or n")
 			       (if (< (line-number-at-pos (point-max))
 				      (window-body-height))
 				   ""
@@ -3766,8 +3818,13 @@ i  -- to ignore the local variables list, and permanently mark these
 	       char)
 	  (when offer-save
             (push ?i exit-chars)
-            (push ?! exit-chars))
+            (push ?! exit-chars)
+            (when dir-name
+              (push ?+ exit-chars)))
 	  (setq char (read-char-choice prompt exit-chars))
+          (when (and offer-save dir-name (= char ?+))
+            (customize-push-and-save 'safe-local-variable-directories
+                                     (list dir-name)))
 	  (when (and offer-save
                      (or (= char ?!) (= char ?i))
                      unsafe-vars)
@@ -3776,7 +3833,7 @@ i  -- to ignore the local variables list, and permanently mark these
                  'safe-local-variable-values
                'ignored-local-variable-values)
              unsafe-vars))
-	  (prog1 (memq char '(?! ?\s ?y))
+	  (prog1 (memq char '(?! ?\s ?y ?+))
 	    (quit-window t)))))))
 
 (defconst hack-local-variable-regexp
@@ -3908,6 +3965,10 @@ DIR-NAME is the name of the associated directory.  Otherwise it is nil."
 		  (null unsafe-vars)
 		  (null risky-vars))
 	     (memq enable-local-variables '(:all :safe))
+             (delq nil (mapcar (lambda (dir)
+                                 (and dir-name dir
+                                      (file-equal-p dir dir-name)))
+                               safe-local-variable-directories))
 	     (hack-local-variables-confirm all-vars unsafe-vars
 					   risky-vars dir-name))
 	 (dolist (elt all-vars)
@@ -4025,6 +4086,7 @@ major-mode."
 	  (forward-line 1)
 	  (let ((startpos (point))
 	        endpos
+                (selective-p (eq selective-display t))
 	        (thisbuf (current-buffer)))
 	    (save-excursion
 	      (unless (let ((case-fold-search t))
@@ -4041,7 +4103,8 @@ major-mode."
 	    (with-temp-buffer
 	      (insert-buffer-substring thisbuf startpos endpos)
 	      (goto-char (point-min))
-	      (subst-char-in-region (point) (point-max) ?\^m ?\n)
+              (if selective-p
+	          (subst-char-in-region (point) (point-max) ?\r ?\n))
 	      (while (not (eobp))
 	        ;; Discard the prefix.
 	        (if (looking-at prefix)
@@ -5732,9 +5795,14 @@ Before and after saving the buffer, this function runs
 	          (run-hook-with-args-until-success 'write-file-functions)
 	          ;; If a hook returned t, file is already "written".
 	          ;; Otherwise, write it the usual way now.
-	          (let ((dir (file-name-directory
+	          (let ((file (buffer-file-name))
+                        (dir (file-name-directory
 			      (expand-file-name buffer-file-name))))
-		    (unless (file-exists-p dir)
+                    ;; Some systems have directories (like /content on
+                    ;; Android) in which files can exist without a
+                    ;; corresponding parent directory.
+		    (unless (or (file-exists-p file)
+                                (file-exists-p dir))
 		      (if (y-or-n-p
 		           (format-message
                             "Directory `%s' does not exist; create? " dir))
@@ -6211,11 +6279,11 @@ instance of such commands."
       (rename-buffer (generate-new-buffer-name base-name))
       (force-mode-line-update))))
 
-(defun files--ensure-directory (mkdir dir)
-  "Use function MKDIR to make directory DIR if it is not already a directory.
+(defun files--ensure-directory (dir)
+  "Make directory DIR if it is not already a directory.
 Return non-nil if DIR is already a directory."
   (condition-case err
-      (funcall mkdir dir)
+      (make-directory-internal dir)
     (error
      (or (file-directory-p dir)
 	 (signal (car err) (cdr err))))))
@@ -6241,32 +6309,27 @@ Signal an error if unsuccessful."
   ;; If default-directory is a remote directory,
   ;; make sure we find its make-directory handler.
   (setq dir (expand-file-name dir))
-  (let ((mkdir (if-let ((handler (find-file-name-handler dir 'make-directory)))
-		   #'(lambda (dir)
-		       ;; Use 'ignore' since the handler might be designed for
-		       ;; Emacs 28-, so it might return an (undocumented)
-		       ;; non-nil value, whereas the Emacs 29+ convention is
-		       ;; to return nil here.
-		       (ignore (funcall handler 'make-directory dir)))
-                 #'make-directory-internal)))
-    (if (not parents)
-        (funcall mkdir dir)
-      (let ((dir (directory-file-name (expand-file-name dir)))
-            already-dir create-list parent)
-        (while (progn
-                 (setq parent (directory-file-name
-                               (file-name-directory dir)))
-                 (condition-case ()
-                     (ignore (setq already-dir
-                                   (files--ensure-directory mkdir dir)))
-                   (error
-                    ;; Do not loop if root does not exist (Bug#2309).
-                    (not (string= dir parent)))))
-          (setq create-list (cons dir create-list)
-                dir parent))
-        (dolist (dir create-list)
-          (setq already-dir (files--ensure-directory mkdir dir)))
-        already-dir))))
+  (let ((handler (find-file-name-handler dir 'make-directory)))
+    (if handler
+	(funcall handler 'make-directory dir parents)
+      (if (not parents)
+	  (make-directory-internal dir)
+	(let ((dir (directory-file-name (expand-file-name dir)))
+	      already-dir create-list parent)
+	  (while (progn
+		   (setq parent (directory-file-name
+				 (file-name-directory dir)))
+		   (condition-case ()
+		       (ignore (setq already-dir
+				     (files--ensure-directory dir)))
+		     (error
+		      ;; Do not loop if root does not exist (Bug#2309).
+		      (not (string= dir parent)))))
+	    (setq create-list (cons dir create-list)
+		  dir parent))
+	  (dolist (dir create-list)
+	    (setq already-dir (files--ensure-directory dir)))
+	  already-dir)))))
 
 (defun make-empty-file (filename &optional parents)
   "Create an empty file FILENAME.
@@ -6297,6 +6360,26 @@ non-nil and if FN fails due to a missing file or directory."
   (condition-case err
       (apply fn args)
     (file-missing (or no-such (signal (car err) (cdr err))))))
+
+(defun delete-file (filename &optional trash)
+  "Delete file named FILENAME.  If it is a symlink, remove the symlink.
+If file has multiple names, it continues to exist with the other names.
+TRASH non-nil means to trash the file instead of deleting, provided
+`delete-by-moving-to-trash' is non-nil.
+
+When called interactively, TRASH is t if no prefix argument is given.
+With a prefix argument, TRASH is nil."
+  (interactive (list (read-file-name
+                      (if (and delete-by-moving-to-trash (null current-prefix-arg))
+                          "Move file to trash: " "Delete file: ")
+                      nil default-directory (confirm-nonexistent-file-or-buffer))
+                     (null current-prefix-arg)))
+  (if (and (file-directory-p filename) (not (file-symlink-p filename)))
+      (signal 'file-error (list "Removing old name: is a directory" filename)))
+  (let* ((handler (find-file-name-handler filename 'delete-file)))
+    (cond (handler (funcall handler 'delete-file filename trash))
+          ((and delete-by-moving-to-trash trash) (move-file-to-trash filename))
+          (t (delete-file-internal filename)))))
 
 (defun delete-directory (directory &optional recursive trash)
   "Delete the directory named DIRECTORY.  Does not follow symlinks.
@@ -6358,6 +6441,14 @@ RECURSIVE if DIRECTORY is nonempty."
 			  files))
 		  directory-exists))
 	(files--force recursive #'delete-directory-internal directory))))))
+
+(defcustom remote-file-name-inhibit-delete-by-moving-to-trash nil
+  "Whether remote files shall be moved to the Trash.
+This overrules any setting of `delete-by-moving-to-trash'."
+  :version "30.1"
+  :group 'files
+  :group 'tramp
+  :type 'boolean)
 
 (defun file-equal-p (file1 file2)
   "Return non-nil if files FILE1 and FILE2 name the same file.
@@ -7128,10 +7219,11 @@ specifies the list of buffers to kill, asking for approval for each one."
     (setq list (cdr list))))
 
 (defun kill-matching-buffers (regexp &optional internal-too no-ask)
-  "Kill buffers whose name matches the specified REGEXP.
-Ignores buffers whose name starts with a space, unless optional
-prefix argument INTERNAL-TOO is non-nil.  Asks before killing
-each buffer, unless NO-ASK is non-nil."
+  "Kill buffers whose names match the regular expression REGEXP.
+Interactively, prompt for REGEXP.
+Ignores buffers whose names start with a space, unless optional
+prefix argument INTERNAL-TOO(interactively, the prefix argument)
+is non-nil.  Asks before killing each buffer, unless NO-ASK is non-nil."
   (interactive "sKill buffers matching this regular expression: \nP")
   (dolist (buffer (buffer-list))
     (let ((name (buffer-name buffer)))
@@ -7139,6 +7231,17 @@ each buffer, unless NO-ASK is non-nil."
                  (or internal-too (/= (aref name 0) ?\s))
                  (string-match regexp name))
         (funcall (if no-ask 'kill-buffer 'kill-buffer-ask) buffer)))))
+
+(defun kill-matching-buffers-no-ask (regexp &optional internal-too)
+  "Kill buffers whose names match the regular expression REGEXP.
+Interactively, prompt for REGEXP.
+Like `kill-matching-buffers', but doesn't ask for confirmation
+before killing each buffer.
+Ignores buffers whose names start with a space, unless the
+optional argument INTERNAL-TOO (interactively, the prefix argument)
+is non-nil."
+  (interactive "sKill buffers matching this regular expression: \nP")
+  (kill-matching-buffers regexp internal-too t))
 
 
 (defun rename-auto-save-file ()
@@ -7685,7 +7788,7 @@ If DIR's free space cannot be obtained, this function returns nil."
 	 ;; This avoids recognizing `1 may 1997' as a date in the line:
 	 ;; -r--r--r--   1 may      1997        1168 Oct 19 16:49 README
 
-	 ;; The "[BkKMGTPEZY]?" below supports "ls -alh" output.
+	 ;; The "[BkKMGTPEZYRQ]?" below supports "ls -alh" output.
 
 	 ;; For non-iso date formats, we add the ".*" in order to find
 	 ;; the last possible match.  This avoids recognizing
@@ -7697,8 +7800,8 @@ If DIR's free space cannot be obtained, this function returns nil."
          ;; parentheses:
          ;; -rw-r--r-- (modified) 2005-10-22 21:25 files.el
          ;; This is not supported yet.
-    (purecopy (concat "\\([0-9][BkKMGTPEZY]? " iso
-		      "\\|.*[0-9][BkKMGTPEZY]? "
+    (purecopy (concat "\\([0-9][BkKMGTPEZYRQ]? " iso
+		      "\\|.*[0-9][BkKMGTPEZYRQ]? "
 	              "\\(" western "\\|" western-comma
                       "\\|" DD-MMM-YYYY "\\|" east-asian "\\)"
 		      "\\) +")))

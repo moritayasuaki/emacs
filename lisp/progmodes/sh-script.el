@@ -864,10 +864,13 @@ See `sh-feature'.")
 	   ("\\${?\\([[:alpha:]_][[:alnum:]_]*\\|[0-9]+\\|[$*_]\\)" 1
 	     font-lock-variable-name-face))
     (rpm sh-append rpm2
-	 ("%{?\\(\\sw+\\)"  1 font-lock-keyword-face))
+	 ("^\\s-*%\\(\\sw+\\)" 1 font-lock-keyword-face)
+	 ("%{?\\([!?]*[[:alpha:]_][[:alnum:]_]*\\|[0-9]+\\|[%*#]\\*?\\|!?-[[:alpha:]]\\*?\\)"
+	  1 font-lock-variable-name-face))
     (rpm2 sh-append shell
 	  ("^Summary:\\(.*\\)$" (1 font-lock-doc-face t))
-	  ("^\\(\\sw+\\):"  1 font-lock-variable-name-face)))
+	  ("^\\(\\sw+\\)\\((\\(\\sw+\\))\\)?:" (1 font-lock-variable-name-face)
+	   (3 font-lock-string-face nil t))))
   "Default expressions to highlight in Shell Script modes.  See `sh-feature'.")
 
 (defvar sh-font-lock-keywords-var-1
@@ -1042,7 +1045,9 @@ subshells can nest."
                        ;; Maybe we've bumped into an escaped newline.
                        (sh-is-quoted-p (point)))
                 (backward-char 1))
-              (when (eq (char-before) ?|)
+              (when (and
+                     (eq (char-before) ?|)
+                     (not (eq (char-before (1- (point))) ?\;)))
                 (backward-char 1) t)))
         (and (> (point) (1+ (point-min)))
              (progn (backward-char 2)
@@ -1053,7 +1058,7 @@ subshells can nest."
                     ;; a normal command rather than the real `in' keyword.
                     ;; I.e. we should look back to try and find the
                     ;; corresponding `case'.
-                    (and (looking-at ";[;&]\\|\\_<in")
+                    (and (looking-at ";\\(?:;&?\\|[&|]\\)\\|\\_<in")
                          ;; ";; esac )" is a case that looks
                          ;; like a case-pattern but it's really just a close
                          ;; paren after a case statement.  I.e. if we skipped
@@ -1487,6 +1492,7 @@ Return the name of the shell suitable for `sh-set-shell'."
         ((string-match "[.]t?csh\\(rc\\)?\\>" buffer-file-name) "csh")
         ((string-match "[.]zsh\\(rc\\|env\\)?\\>" buffer-file-name) "zsh")
 	((equal (file-name-nondirectory buffer-file-name) ".profile") "sh")
+	((equal (file-name-nondirectory buffer-file-name) "PKGBUILD") "bash")
         (t sh-shell-file)))
 
 ;;;###autoload
@@ -1628,6 +1634,10 @@ not written in Bash or sh."
                   ( bracket delimiter misc-punctuation operator)))
     (setq-local treesit-font-lock-settings
                 sh-mode--treesit-settings)
+    (setq-local treesit-text-type-regexp
+                (regexp-opt '("comment"
+                              "heredoc_start"
+                              "heredoc_body")))
     (setq-local treesit-defun-type-regexp "function_definition")
     (treesit-major-mode-setup)))
 
@@ -1785,8 +1795,9 @@ before the newline and in that case point should be just before the token."
       (pattern (rpattern) ("case-(" rpattern))
       (branches (branches ";;" branches)
                 (branches ";&" branches) (branches ";;&" branches) ;bash.
+                (branches ";|" branches) ;zsh.
                 (pattern "case-)" cmd)))
-    '((assoc ";;" ";&" ";;&"))
+    '((assoc ";;" ";&" ";;&" ";|"))
     '((assoc ";" "&") (assoc "&&" "||") (assoc "|" "|&")))))
 
 (defconst sh-smie--sh-operators
@@ -2011,7 +2022,7 @@ May return nil if the line should not be treated as continued."
       (forward-line -1)
       (if (sh-smie--looking-back-at-continuation-p)
           (current-indentation)
-        (+ (current-indentation) sh-basic-offset))))
+        (+ (current-indentation) (sh-var-value 'sh-indent-for-continuation)))))
    (t
     ;; Just make sure a line-continuation is indented deeper.
     (save-excursion
@@ -2032,7 +2043,10 @@ May return nil if the line should not be treated as continued."
                        ;; check the line before that one.
                        (> ci indent))
                       (t ;Previous line is the beginning of the continued line.
-                       (setq indent (min (+ ci sh-basic-offset) max))
+                       (setq
+                        indent
+                        (min
+                         (+ ci (sh-var-value 'sh-indent-for-continuation)) max))
                        nil)))))
           indent))))))
 
@@ -2056,11 +2070,11 @@ May return nil if the line should not be treated as continued."
 	 `(column . ,(smie-indent-virtual))))))
     ;; FIXME: Maybe this handling of ;; should be made into
     ;; a smie-rule-terminator function that takes the substitute ";" as arg.
-    (`(:before . ,(or ";;" ";&" ";;&"))
-     (if (and (smie-rule-bolp) (looking-at ";;?&?[ \t]*\\(#\\|$\\)"))
+    (`(:before . ,(or ";;" ";&" ";;&" ";|"))
+     (if (and (smie-rule-bolp) (looking-at ";\\(?:;&?\\|[&|]\\)?[ \t]*\\(#\\|$\\)"))
          (cons 'column (smie-indent-keyword ";"))
        (smie-rule-separator kind)))
-    (`(:after . ,(or ";;" ";&" ";;&"))
+    (`(:after . ,(or ";;" ";&" ";;&" ";|"))
      (with-demoted-errors "SMIE rule error: %S"
        (smie-backward-sexp token)
        (cons 'column
@@ -2149,8 +2163,9 @@ May return nil if the line should not be treated as continued."
       (pattern (pattern "|" pattern))
       (branches (branches ";;" branches)
                 (branches ";&" branches) (branches ";;&" branches) ;bash.
+                (branches ";|" branches) ;zsh.
                 (pattern "case-)" cmd)))
-    '((assoc ";;" ";&" ";;&"))
+    '((assoc ";;" ";&" ";;&" ";|"))
     '((assoc "case") (assoc ";" "&") (assoc "&&" "||") (assoc "|" "|&")))))
 
 (defun sh-smie--rc-after-special-arg-p ()

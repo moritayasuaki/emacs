@@ -35,6 +35,7 @@
 (declare-function treesit-node-child "treesit.c")
 (declare-function treesit-node-child-by-field-name "treesit.c")
 (declare-function treesit-node-start "treesit.c")
+(declare-function treesit-node-end "treesit.c")
 (declare-function treesit-node-type "treesit.c")
 (declare-function treesit-search-subtree "treesit.c")
 
@@ -205,9 +206,16 @@
    '((ERROR) @font-lock-warning-face))
   "Tree-sitter font-lock settings for `go-ts-mode'.")
 
+(defvar-keymap go-ts-mode-map
+  :doc "Keymap used in Go mode, powered by tree-sitter"
+  :parent prog-mode-map
+  "C-c C-d" #'go-ts-mode-docstring)
+
 ;;;###autoload
 (define-derived-mode go-ts-mode prog-mode "Go"
-  "Major mode for editing Go, powered by tree-sitter."
+  "Major mode for editing Go, powered by tree-sitter.
+
+\\{go-ts-mode-map}"
   :group 'go
   :syntax-table go-ts-mode--syntax-table
 
@@ -256,9 +264,10 @@
 (if (treesit-ready-p 'go)
     (add-to-list 'auto-mode-alist '("\\.go\\'" . go-ts-mode)))
 
-(defun go-ts-mode--defun-name (node)
+(defun go-ts-mode--defun-name (node &optional skip-prefix)
   "Return the defun name of NODE.
-Return nil if there is no name or if NODE is not a defun node."
+Return nil if there is no name or if NODE is not a defun node.
+Methods are prefixed with the receiver name, unless SKIP-PREFIX is t."
   (pcase (treesit-node-type node)
     ("function_declaration"
      (treesit-node-text
@@ -267,11 +276,10 @@ Return nil if there is no name or if NODE is not a defun node."
       t))
     ("method_declaration"
      (let* ((receiver-node (treesit-node-child-by-field-name node "receiver"))
-            (type-node (treesit-search-subtree receiver-node "type_identifier"))
-            (name-node (treesit-node-child-by-field-name node "name")))
-       (concat
-        "(" (treesit-node-text type-node) ")."
-        (treesit-node-text name-node))))
+            (receiver (treesit-node-text (treesit-search-subtree receiver-node "type_identifier")))
+            (method (treesit-node-text (treesit-node-child-by-field-name node "name"))))
+       (if skip-prefix method
+         (concat "(" receiver ")." method))))
     ("type_declaration"
      (treesit-node-text
       (treesit-node-child-by-field-name
@@ -303,6 +311,32 @@ Return nil if there is no name or if NODE is not a defun node."
    (not (go-ts-mode--interface-node-p node))
    (not (go-ts-mode--struct-node-p node))
    (not (go-ts-mode--alias-node-p node))))
+
+(defun go-ts-mode-docstring ()
+  "Add a docstring comment for the current defun.
+The added docstring is prefilled with the defun's name.  If the
+comment already exists, jump to it."
+  (interactive)
+  (when-let ((defun-node (treesit-defun-at-point)))
+    (goto-char (treesit-node-start defun-node))
+    (if (go-ts-mode--comment-on-previous-line-p)
+        ;; go to top comment line
+        (while (go-ts-mode--comment-on-previous-line-p)
+          (forward-line -1))
+      (insert "// " (go-ts-mode--defun-name defun-node t))
+      (newline)
+      (backward-char))))
+
+(defun go-ts-mode--comment-on-previous-line-p ()
+  "Return t if the previous line is a comment."
+  (when-let ((point (- (pos-bol) 1))
+             ((> point 0))
+             (node (treesit-node-at point)))
+    (and
+     ;; check point is actually inside the found node
+     ;; treesit-node-at can return nodes after point
+     (<= (treesit-node-start node) point (treesit-node-end node))
+     (string-equal "comment" (treesit-node-type node)))))
 
 ;; go.mod support.
 

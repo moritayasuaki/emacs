@@ -342,7 +342,7 @@ PARENT is the same as other anchor functions."
       ;; nil.
       parent (lambda (node)
                (and node
-                    (not (string-match "preproc" (treesit-node-type node)))
+                    (not (string-search "preproc" (treesit-node-type node)))
                     (progn
                       (goto-char (treesit-node-start node))
                       (looking-back (rx bol (* whitespace))
@@ -1128,6 +1128,35 @@ BEG and END are described in `treesit-range-rules'."
   (setq-local treesit-defun-skipper #'c-ts-mode--defun-skipper)
   (setq-local treesit-defun-name-function #'c-ts-mode--defun-name)
 
+  (setq-local treesit-sentence-type-regexp
+              ;; compound_statement makes us jump over too big units
+              ;; of code, so skip that one, and include the other
+              ;; statements.
+              (regexp-opt '("preproc"
+                            "declaration"
+                            "specifier"
+                            "attributed_statement"
+                            "labeled_statement"
+                            "expression_statement"
+                            "if_statement"
+                            "switch_statement"
+                            "do_statement"
+                            "while_statement"
+                            "for_statement"
+                            "return_statement"
+                            "break_statement"
+                            "continue_statement"
+                            "goto_statement"
+                            "case_statement")))
+
+  ;; IMO it makes more sense to define what's NOT sexp, since sexp by
+  ;; spirit, especially when used for movement, is like "expression"
+  ;; or "syntax unit". --yuan
+  (setq-local treesit-sexp-type-regexp
+              ;; It more useful to include semicolons as sexp so that
+              ;; users can move to the end of a statement.
+              (rx (not (or "{" "}" "[" "]" "(" ")" ","))))
+
   ;; Nodes like struct/enum/union_specifier can appear in
   ;; function_definitions, so we need to find the top-level node.
   (setq-local treesit-defun-prefer-top-level t)
@@ -1263,13 +1292,20 @@ recommended to enable `electric-pair-mode' with this mode."
   :after-hook (c-ts-mode-set-modeline)
 
   (when (treesit-ready-p 'cpp)
+    (setq-local treesit-text-type-regexp
+                (regexp-opt '("comment"
+                              "raw_string_literal")))
+
     (treesit-parser-create 'cpp)
+
     ;; Syntax.
     (setq-local syntax-propertize-function
                 #'c-ts-mode--syntax-propertize)
+
     ;; Indent.
     (setq-local treesit-simple-indent-rules
                 (c-ts-mode--get-indent-style 'cpp))
+
     ;; Font-lock.
     (setq-local treesit-font-lock-settings (c-ts-mode--font-lock-settings 'cpp))
     (treesit-major-mode-setup)
@@ -1323,7 +1359,7 @@ recommended to enable `electric-pair-mode' with this mode."
               "\\|" id "::"
               "\\|" id ws-maybe "=\\)"
               "\\|" "\\(?:inline" ws "\\)?namespace"
-              "\\(:?" ws "\\(?:" id "::\\)*" id "\\)?" ws-maybe "{"
+              "\\(?:" ws "\\(?:" id "::\\)*" id "\\)?" ws-maybe "{"
               "\\|" "class"     ws id
               "\\(?:" ws "final" "\\)?" ws-maybe "[:{;\n]"
               "\\|" "struct"     ws id "\\(?:" ws "final" ws-maybe "[:{\n]"

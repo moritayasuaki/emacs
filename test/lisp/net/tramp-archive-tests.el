@@ -121,12 +121,6 @@ the origin of the temporary TMPFILE, have no write permissions."
      (directory-files tmpfile 'full directory-files-no-dot-files-regexp))
     (delete-directory tmpfile)))
 
-(defun tramp-archive--test-emacs27-p ()
-  "Check for Emacs version >= 27.1.
-Some semantics has been changed for there, without new functions or
-variables, so we check the Emacs version directly."
-  (>= emacs-major-version 27))
-
 (defun tramp-archive--test-emacs28-p ()
   "Check for Emacs version >= 28.1.
 Some semantics has been changed for there, without new functions or
@@ -621,16 +615,13 @@ This checks also `file-name-as-directory', `file-name-directory',
 	  (with-temp-buffer
 	    (insert-directory tramp-archive-test-archive nil)
 	    (goto-char (point-min))
-	    (should
-	     (looking-at-p
-	      (tramp-compat-rx (literal tramp-archive-test-archive)))))
+	    (should (looking-at-p (rx (literal tramp-archive-test-archive)))))
 	  (with-temp-buffer
 	    (insert-directory tramp-archive-test-archive "-al")
 	    (goto-char (point-min))
 	    (should
 	     (looking-at-p
-	      (tramp-compat-rx
-	       bol (+ nonl) blank (literal tramp-archive-test-archive) eol))))
+	      (rx bol (+ nonl) blank (literal tramp-archive-test-archive) eol))))
 	  (with-temp-buffer
 	    (insert-directory
 	     (file-name-as-directory tramp-archive-test-archive)
@@ -886,12 +877,8 @@ This tests also `file-executable-p', `file-writable-p' and `set-file-modes'."
 (ert-deftest tramp-archive-test43-file-system-info ()
   "Check that `file-system-info' returns proper values."
   (skip-unless tramp-archive-enabled)
-  ;; Since Emacs 27.1.
-  (skip-unless (fboundp 'file-system-info))
 
-  ;; `file-system-info' exists since Emacs 27.  We don't want to see
-  ;; compiler warnings for older Emacsen.
-  (let ((fsi (with-no-warnings (file-system-info tramp-archive-test-archive))))
+  (let ((fsi (file-system-info tramp-archive-test-archive)))
     (skip-unless fsi)
     (should (and (consp fsi)
 		 (tramp-compat-length= fsi 3)
@@ -900,12 +887,24 @@ This tests also `file-executable-p', `file-writable-p' and `set-file-modes'."
 		 (zerop (nth 1 fsi))
 		 (zerop (nth 2 fsi))))))
 
-(ert-deftest tramp-archive-test47-auto-load ()
+;; `file-user-uid' and `file-group-gid' were introduced in Emacs 30.1.
+(ert-deftest tramp-archive-test44-user-group-ids ()
+  "Check results of user/group functions.
+`file-user-uid' and `file-group-gid' should return proper values."
+  (skip-unless tramp-archive-enabled)
+  (skip-unless (and (fboundp 'file-user-uid)
+                    (fboundp 'file-group-gid)))
+
+  (let ((default-directory tramp-archive-test-archive))
+    ;; `file-user-uid' and `file-group-gid' exist since Emacs 30.1.
+    ;; We don't want to see compiler warnings for older Emacsen.
+    (should (integerp (with-no-warnings (file-user-uid))))
+    (should (integerp (with-no-warnings (file-group-gid))))))
+
+(ert-deftest tramp-archive-test48-auto-load ()
   "Check that `tramp-archive' autoloads properly."
   :tags '(:expensive-test)
   (skip-unless tramp-archive-enabled)
-  ;; Autoloading tramp-archive works since Emacs 27.1.
-  (skip-unless (tramp-archive--test-emacs27-p))
 
   ;; tramp-archive is neither loaded at Emacs startup, nor when
   ;; loading a file like "/mock::foo" (which loads Tramp).
@@ -931,7 +930,7 @@ This tests also `file-executable-p', `file-writable-p' and `set-file-modes'."
 	(dolist (file `("/mock::foo" ,(concat tramp-archive-test-archive "foo")))
           (should
            (string-match
-	    (tramp-compat-rx
+	    (rx
 	     "tramp-archive loaded: "
 	     (literal (symbol-name
 		       (tramp-archive-file-name-p default-directory)))
@@ -950,12 +949,10 @@ This tests also `file-executable-p', `file-writable-p' and `set-file-modes'."
 	       (format "(setq tramp-archive-enabled %s)" enabled))
 	      (shell-quote-argument (format code file)))))))))))
 
-(ert-deftest tramp-archive-test47-delay-load ()
+(ert-deftest tramp-archive-test48-delay-load ()
   "Check that `tramp-archive' is loaded lazily, only when needed."
   :tags '(:expensive-test)
   (skip-unless tramp-archive-enabled)
-  ;; Autoloading tramp-archive works since Emacs 27.1.
-  (skip-unless (tramp-archive--test-emacs27-p))
 
   ;; tramp-archive is neither loaded at Emacs startup, nor when
   ;; loading a file like "/foo.tar".  It is loaded only when
@@ -976,7 +973,7 @@ This tests also `file-executable-p', `file-writable-p' and `set-file-modes'."
     (dolist (tae '(t nil))
       (should
        (string-match
-	(tramp-compat-rx
+	(rx
 	 "tramp-archive loaded: nil" (+ ascii)
 	 "tramp-archive loaded: nil" (+ ascii)
 	 "tramp-archive loaded: " (literal (symbol-name tae)))
@@ -990,6 +987,20 @@ This tests also `file-executable-p', `file-writable-p' and `set-file-modes'."
            (format
             code tae tramp-archive-test-file-archive
             (concat tramp-archive-test-archive "foo"))))))))))
+
+(ert-deftest tramp-archive-test49-without-remote-files ()
+  "Check that Tramp can be suppressed."
+  (skip-unless tramp-archive-enabled)
+
+  (should (file-exists-p tramp-archive-test-archive))
+  (should-not (without-remote-files (file-exists-p tramp-archive-test-archive)))
+  (should (file-exists-p tramp-archive-test-archive))
+
+  (inhibit-remote-files)
+  (should-not (file-exists-p tramp-archive-test-archive))
+  (tramp-register-file-name-handlers)
+  (setq tramp-mode t)
+  (should (file-exists-p tramp-archive-test-archive)))
 
 (ert-deftest tramp-archive-test99-libarchive-tests ()
   "Run tests of libarchive test files."

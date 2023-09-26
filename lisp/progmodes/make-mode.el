@@ -105,7 +105,7 @@
   :version "22.1")
 
 (defface makefile-shell
-  ()
+  '((t (:inherit default)))
   ;;'((((class color) (min-colors 88) (background light)) (:background  "seashell1"))
   ;;  (((class color) (min-colors 88) (background dark)) (:background  "seashell4")))
   "Face to use for additionally highlighting Shell commands in Font-Lock mode."
@@ -1326,14 +1326,12 @@ Fill comments, backslashed lines, and variable definitions specially."
   (let ((inhibit-read-only t))
     (goto-char (point-min))
     (erase-buffer)
-    (mapconcat
+    (mapc
      (lambda (item) (insert (makefile-browser-format-target-line (car item) nil) "\n"))
-     targets
-     "")
-    (mapconcat
+     targets)
+    (mapc
      (lambda (item) (insert (makefile-browser-format-macro-line (car item) nil) "\n"))
-     macros
-     "")
+     macros)
     (sort-lines nil (point-min) (point-max))
     (goto-char (1- (point-max)))
     (delete-char 1)			; remove unnecessary newline at eob

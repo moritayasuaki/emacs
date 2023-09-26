@@ -28,6 +28,9 @@
 ;;; Code:
 
 (require 'esh-util)
+(require 'esh-module)
+
+(require 'pcomplete)
 
 (eval-when-compile
   (require 'cl-lib))
@@ -175,7 +178,11 @@ treated as a literal character."
   "Initialize the argument parsing code."
   (eshell-arg-mode)
   (setq-local eshell-inside-quote-regexp nil)
-  (setq-local eshell-outside-quote-regexp nil))
+  (setq-local eshell-outside-quote-regexp nil)
+
+  (when (eshell-using-module 'eshell-cmpl)
+    (add-hook 'pcomplete-try-first-hook
+              #'eshell-complete-special-reference nil t)))
 
 (defun eshell-insert-buffer-name (buffer-name)
   "Insert BUFFER-NAME into the current buffer at point."
@@ -238,13 +245,53 @@ convert the result to a number as well."
         (eshell-convert-to-number result)
       result)))
 
+(defun eshell-concat-groups (quoted &rest args)
+  "Concatenate groups of arguments in ARGS and return the result.
+QUOTED is passed to `eshell-concat' (which see) and, if non-nil,
+allows values to be converted to numbers where appropriate.
+
+ARGS should be a list of lists of arguments, such as that
+produced by `eshell-prepare-slice'.  \"Adjacent\" values of
+consecutive arguments will be passed to `eshell-concat'.  For
+example, if ARGS is
+
+  ((list a) (list b) (list c d e) (list f g)),
+
+then the result will be:
+
+  ((eshell-concat QUOTED a b c)
+   d
+   (eshell-concat QUOTED e f)
+   g)."
+  (let (result current-arg)
+    (dolist (arg args)
+      (when arg
+        (push (car arg) current-arg)
+        (when (length> arg 1)
+          (push (apply #'eshell-concat quoted (nreverse current-arg))
+                result)
+          (dolist (inner (butlast (cdr arg)))
+            (push inner result))
+          (setq current-arg (list (car (last arg)))))))
+    (when current-arg
+      (push (apply #'eshell-concat quoted (nreverse current-arg))
+            result))
+    (nreverse result)))
+
 (defun eshell-resolve-current-argument ()
   "If there are pending modifications to be made, make them now."
   (when eshell-current-argument
     (when eshell-arg-listified
-      (setq eshell-current-argument
-            (append (list 'eshell-concat eshell-current-quoted)
-                    eshell-current-argument))
+      (if-let ((grouped-terms (eshell-prepare-splice
+                               eshell-current-argument)))
+          (setq eshell-current-argument
+                `(eshell-splice-args
+                  (eshell-concat-groups ,eshell-current-quoted
+                                        ,@grouped-terms)))
+        ;; If no terms are spliced, use a simpler command form.
+        (setq eshell-current-argument
+              (append (list 'eshell-concat eshell-current-quoted)
+                      eshell-current-argument)))
       (setq eshell-arg-listified nil))
     (while eshell-current-modifiers
       (setq eshell-current-argument
@@ -261,7 +308,8 @@ argument list in place of the value of the current argument."
         (setq eshell-current-argument (car arguments))
       (cl-assert (and (not eshell-arg-listified)
                       (not eshell-current-modifiers)))
-      (setq eshell-current-argument (cons 'eshell-flatten-args arguments))))
+      (setq eshell-current-argument
+            (cons 'eshell-splice-immediately arguments))))
   (throw 'eshell-arg-done t))
 
 (defun eshell-quote-argument (string)
@@ -302,7 +350,8 @@ Point is left at the end of the arguments."
                                 (buffer-substring here (point-max))))
                      (when arg
                        (nconc args
-                              (if (eq (car-safe arg) 'eshell-flatten-args)
+                              (if (eq (car-safe arg)
+                                      'eshell-splice-immediately)
                                   (cdr arg)
                                 (list arg))))))))
               (throw 'eshell-incomplete (if (listp delim)
@@ -348,6 +397,10 @@ Point is left at the end of the arguments."
   "A stub function that generates an error if a floating operator is found."
   (error "Unhandled operator in input text"))
 
+(defsubst eshell-splice-args (&rest _args)
+  "A stub function that generates an error if a floating splice is found."
+  (error "Splice operator is not permitted in this context"))
+
 (defsubst eshell-looking-at-backslash-return (pos)
   "Test whether a backslash-return sequence occurs at POS."
   (and (eq (char-after pos) ?\\)
@@ -375,29 +428,33 @@ backslash is in a quoted string, the backslash and the character
 after are both returned."
   (when (eq (char-after) ?\\)
     (when (eshell-looking-at-backslash-return (point))
-	(throw 'eshell-incomplete ?\\))
+        (throw 'eshell-incomplete "\\"))
     (forward-char 2) ; Move one char past the backslash.
-    (if (eq (char-before) ?\n)
-        ;; Escaped newlines are extra-special: they expand to an empty
-        ;; token to allow for continuing Eshell commands across
-        ;; multiple lines.
-        'eshell-empty-token
-      ;; If the char is in a quote, backslash only has special meaning
-      ;; if it is escaping a special char.
-      (if eshell-current-quoted
-          (if (memq (char-before) eshell-special-chars-inside-quoting)
-              (list 'eshell-escape-arg (char-to-string (char-before)))
-            (concat "\\" (char-to-string (char-before))))
-        (if (memq (char-before) eshell-special-chars-outside-quoting)
-            (list 'eshell-escape-arg (char-to-string (char-before)))
-          (char-to-string (char-before)))))))
+    (let ((special-chars (if eshell-current-quoted
+                             eshell-special-chars-inside-quoting
+                           eshell-special-chars-outside-quoting)))
+      (cond
+       ;; Escaped newlines are extra-special: they expand to an empty
+       ;; token to allow for continuing Eshell commands across
+       ;; multiple lines.
+       ((eq (char-before) ?\n)
+        'eshell-empty-token)
+       ((memq (char-before) special-chars)
+        (list 'eshell-escape-arg (char-to-string (char-before))))
+       ;; If the char is in a quote, backslash only has special
+       ;; meaning if it is escaping a special char.  Otherwise, the
+       ;; result is the literal string "\c".
+       (eshell-current-quoted
+        (concat "\\" (char-to-string (char-before))))
+       (t
+        (char-to-string (char-before)))))))
 
 (defun eshell-parse-literal-quote ()
   "Parse a literally quoted string.  Nothing has special meaning!"
   (if (eq (char-after) ?\')
       (let ((end (eshell-find-delimiter ?\' ?\')))
 	(if (not end)
-	    (throw 'eshell-incomplete ?\')
+            (throw 'eshell-incomplete "'")
 	  (let ((string (buffer-substring-no-properties (1+ (point)) end)))
 	    (goto-char (1+ end))
 	    (while (string-match "''" string)
@@ -410,7 +467,7 @@ after are both returned."
     (let* ((end (eshell-find-delimiter ?\" ?\" nil nil t))
 	   (eshell-current-quoted t))
       (if (not end)
-	  (throw 'eshell-incomplete ?\")
+          (throw 'eshell-incomplete "\"")
 	(prog1
 	    (save-restriction
 	      (forward-char)
@@ -456,21 +513,28 @@ If the form has no `type', the syntax is parsed as if `type' were
 \"buffer\"."
   (when (and (not eshell-current-argument)
              (not eshell-current-quoted)
-             (looking-at "#<\\(\\(buffer\\|process\\)\\s-\\)?"))
+             (looking-at (rx "#<" (? (group (or "buffer" "process"))
+                                     space))))
     (let ((here (point)))
       (goto-char (match-end 0)) ;; Go to the end of the match.
-      (let ((buffer-p (if (match-string 1)
-                          (string= (match-string 2) "buffer")
-                        t)) ;; buffer-p is non-nil by default.
+      (let ((buffer-p (if (match-beginning 1)
+                          (equal (match-string 1) "buffer")
+                        t)) ; With no type keyword, assume we want a buffer.
             (end (eshell-find-delimiter ?\< ?\>)))
         (when (not end)
-          (throw 'eshell-incomplete ?\<))
+          (when (match-beginning 1)
+            (goto-char (match-beginning 1)))
+          (throw 'eshell-incomplete "#<"))
         (if (eshell-arg-delimiter (1+ end))
             (prog1
-                (list (if buffer-p 'get-buffer-create 'get-process)
-                      (replace-regexp-in-string
-                       (rx "\\" (group (or "\\" "<" ">"))) "\\1"
-                       (buffer-substring-no-properties (point) end)))
+                (list (if buffer-p #'get-buffer-create #'get-process)
+                      ;; FIXME: We should probably parse this as a
+                      ;; real Eshell argument so that we get the
+                      ;; benefits of quoting, variable-expansion, etc.
+                      (string-trim-right
+                       (replace-regexp-in-string
+                        (rx "\\" (group anychar)) "\\1"
+                        (buffer-substring-no-properties (point) end))))
               (goto-char (1+ end)))
           (ignore (goto-char here)))))))
 
@@ -495,6 +559,70 @@ If the form has no `type', the syntax is parsed as if `type' were
 		  (t
 		   (char-to-string (char-after)))))
 	 (goto-char end)))))))
+
+(defun eshell-prepare-splice (args)
+  "Prepare a list of ARGS for splicing, if any arg requested a splice.
+This looks for `eshell-splice-args' as the CAR of each argument,
+and if found, returns a grouped list like:
+
+  ((list arg-1) (list arg-2) spliced-arg-3 ...)
+
+This allows callers of this function to build the final spliced
+list by concatenating each element together, e.g. with
+
+   (apply #\\='append grouped-list)
+
+If no argument requested a splice, return nil."
+  (let* ((splicep nil)
+         ;; Group each arg like ((list arg-1) (list arg-2) ...),
+         ;; splicing in `eshell-splice-args' args.  This lets us
+         ;; apply spliced args correctly elsewhere.
+         (grouped-args
+          (mapcar (lambda (i)
+                    (if (eq (car-safe i) 'eshell-splice-args)
+                        (progn
+                          (setq splicep t)
+                          (cadr i))
+                      `(list ,i)))
+                  args)))
+    (when splicep
+      grouped-args)))
+
+;;;_* Special ref completion
+
+(defun eshell-complete-special-reference ()
+  "If there is a special reference, complete it."
+  (let ((arg (pcomplete-actual-arg)))
+    (when (string-match
+           (rx string-start
+               "#<" (? (group (or "buffer" "process")) space)
+               (group (* anychar))
+               string-end)
+           arg)
+      (let ((all-results (if (equal (match-string 1 arg) "process")
+                             (mapcar #'process-name (process-list))
+                           (mapcar #'buffer-name (buffer-list))))
+            (saw-type (match-beginning 1)))
+        (unless saw-type
+          ;; Include the special reference types as completion options.
+          (setq all-results (append '("buffer" "process") all-results)))
+        (setq pcomplete-stub (replace-regexp-in-string
+                              (rx "\\" (group anychar)) "\\1"
+                              (substring arg (match-beginning 2))))
+        ;; When finished with completion, add a trailing ">" (unless
+        ;; we just completed the initial "buffer" or "process"
+        ;; keyword).
+        (add-function
+         :before (var pcomplete-exit-function)
+         (lambda (value status)
+           (when (and (eq status 'finished)
+                      (or saw-type
+                          (not (member value '("buffer" "process")))))
+             (if (looking-at ">")
+                 (goto-char (match-end 0))
+               (insert ">")))))
+        (throw 'pcomplete-completions
+               (all-completions pcomplete-stub all-results))))))
 
 (provide 'esh-arg)
 ;;; esh-arg.el ends here

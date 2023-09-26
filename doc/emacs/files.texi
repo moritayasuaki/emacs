@@ -812,22 +812,21 @@ in these cases, customize the variable
 @vindex write-region-inhibit-fsync
   Normally, when a program writes a file, the operating system briefly
 caches the file's data in main memory before committing the data to
-disk.  This can greatly improve performance; for example, when running
-on laptops, it can avoid a disk spin-up each time a file is written.
-However, it risks data loss if the operating system crashes before
-committing the cache to disk.
+secondary storage.  Although this can greatly improve performance, it
+risks data loss if the system loses power before committing the cache,
+and on some platforms other processes might not immediately notice the
+file's change.
 
   To lessen this risk, Emacs can invoke the @code{fsync} system call
 after saving a file.  Using @code{fsync} does not eliminate the risk
-of data loss, partly because many systems do not implement
+of data loss or slow notification, partly because many systems do not support
 @code{fsync} properly, and partly because Emacs's file-saving
 procedure typically relies also on directory updates that might not
 survive a crash even if @code{fsync} works properly.
 
   The @code{write-region-inhibit-fsync} variable controls whether
 Emacs invokes @code{fsync} after saving a file.  The variable's
-default value is @code{nil} when Emacs is interactive, and @code{t}
-when Emacs runs in batch mode (@pxref{Initial Options, Batch Mode}).
+default value is @code{t}.
 
   Emacs never uses @code{fsync} when writing auto-save files, as these
 files might lose data anyway.
@@ -1738,9 +1737,13 @@ only the hunks within the region.
 Re-generate the current hunk (@code{diff-refresh-hunk}).
 
 @item C-c C-w
+@vindex diff-ignore-whitespace-switches
 @findex diff-ignore-whitespace-hunk
-Re-generate the current hunk, disregarding changes in whitespace
-(@code{diff-ignore-whitespace-hunk}).
+Re-generate the current hunk, disregarding changes in whitespace.
+With a non-@code{nil} prefix arg, re-generate all the hunks
+(@code{diff-ignore-whitespace-hunk}).  This calls @code{diff-command}
+with @code{diff-ignore-whitespace-switches}, which defaults to
+@samp{-b}, meaning ignore changes in whitespace only.
 
 @item C-x 4 A
 @findex diff-add-change-log-entries-other-window
@@ -1899,6 +1902,11 @@ following in the Trash directory:
   Note, however, if you use the system ``empty trash'' command, it's
 liable to also delete this @code{.dir-locals.el} file, so this should
 only be done if you delete files from the Trash directory manually.
+
+@vindex remote-file-name-inhibit-delete-by-moving-to-trash
+  If the variable @code{remote-file-name-inhibit-delete-by-moving-to-trash}
+is non-@code{nil}, remote files are never moved to the Trash.  They
+are deleted instead.
 
 @ifnottex
   If a file is under version control (@pxref{Version Control}), you
@@ -2085,10 +2093,11 @@ Otherwise, Emacs uses @command{ssh}.
 @end enumerate
 
 @cindex disabling remote files
+@cindex inhibit-remote-files
 @noindent
-You can entirely turn off the remote file name feature by setting the
-variable @code{tramp-mode} to @code{nil}.  You can turn off the
-feature in individual cases by quoting the file name with @samp{/:}
+You can entirely turn off the remote file name feature by running
+@kbd{M-x inhibit-remote-files}.  You can turn off the feature in
+individual cases by quoting the file name with @samp{/:}
 (@pxref{Quoted File Names}).
 
 @cindex @code{ange-ftp}
@@ -2246,6 +2255,12 @@ enabled, the @samp{File} menu will include a submenu that you can use
 to visit one of these files.  @kbd{M-x recentf-save-list} saves the
 current @code{recentf-list} to a file, and @kbd{M-x recentf-edit-list}
 edits it.
+
+@vindex remote-file-name-access-timeout
+  If you use remote files, you might also consider customizing
+@code{remote-file-name-access-timeout}, which is the number of
+seconds after which the check whether a remote file shall be used
+in Recentf is stopped.  This prevents Emacs being blocked.
 
 @c FIXME partial-completion-mode (complete.el) is obsolete.
   The @kbd{M-x ffap} command generalizes @code{find-file} with more

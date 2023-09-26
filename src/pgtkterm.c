@@ -3150,11 +3150,15 @@ pgtk_scroll_run (struct window *w, struct run *run)
 
 /* Icons.  */
 
-/* Make the x-window of frame F use the gnu icon bitmap.  */
-
 static bool
 pgtk_bitmap_icon (struct frame *f, Lisp_Object file)
 {
+  /* This code has never worked anyway for the reason that Wayland
+     uses icons set within desktop files, and has been disabled
+     because leaving it intact would require image.c to retain a
+     reference to a GdkPixbuf (which are no longer used) within new
+     bitmaps.  */
+#if 0
   ptrdiff_t bitmap_id;
 
   if (FRAME_GTK_WIDGET (f) == 0)
@@ -3210,12 +3214,8 @@ pgtk_bitmap_icon (struct frame *f, Lisp_Object file)
       bitmap_id = FRAME_DISPLAY_INFO (f)->icon_bitmap_id;
     }
 
-  if (FRAME_DISPLAY_INFO (f)->bitmaps[bitmap_id - 1].img != NULL)
-    gtk_window_set_icon (GTK_WINDOW (FRAME_GTK_OUTER_WIDGET (f)),
-			 FRAME_DISPLAY_INFO (f)->bitmaps[bitmap_id - 1].img);
-
   f->output_data.pgtk->icon_bitmap = bitmap_id;
-
+#endif /* 0 */
   return false;
 }
 
@@ -3769,7 +3769,8 @@ pgtk_flash (struct frame *f)
       cairo_rectangle (cr,
 		       flash_left,
 		       (height - flash_height
-			- FRAME_INTERNAL_BORDER_WIDTH (f)),
+			- FRAME_INTERNAL_BORDER_WIDTH (f)
+			- FRAME_BOTTOM_MARGIN_HEIGHT (f)),
 		       width, flash_height);
       cairo_fill (cr);
     }
@@ -4950,36 +4951,38 @@ pgtk_clear_under_internal_border (struct frame *f)
       int width = FRAME_PIXEL_WIDTH (f);
       int height = FRAME_PIXEL_HEIGHT (f);
       int margin = FRAME_TOP_MARGIN_HEIGHT (f);
-      int face_id =
-	(FRAME_PARENT_FRAME (f)
-	 ? (!NILP (Vface_remapping_alist)
-	    ? lookup_basic_face (NULL, f, CHILD_FRAME_BORDER_FACE_ID)
-	    : CHILD_FRAME_BORDER_FACE_ID)
-	 : (!NILP (Vface_remapping_alist)
-	    ? lookup_basic_face (NULL, f, INTERNAL_BORDER_FACE_ID)
-	    : INTERNAL_BORDER_FACE_ID));
+      int bottom_margin = FRAME_BOTTOM_MARGIN_HEIGHT (f);
+      int face_id = (FRAME_PARENT_FRAME (f)
+		     ? (!NILP (Vface_remapping_alist)
+			? lookup_basic_face (NULL, f,
+					     CHILD_FRAME_BORDER_FACE_ID)
+			: CHILD_FRAME_BORDER_FACE_ID)
+		     : (!NILP (Vface_remapping_alist)
+			? lookup_basic_face (NULL, f,
+					     INTERNAL_BORDER_FACE_ID)
+			: INTERNAL_BORDER_FACE_ID));
       struct face *face = FACE_FROM_ID_OR_NULL (f, face_id);
 
       block_input ();
 
       if (face)
 	{
-#define x_fill_rectangle(f, gc, x, y, w, h) \
-	    fill_background_by_face (f, face, x, y, w, h)
-	  x_fill_rectangle (f, gc, 0, margin, width, border);
-	  x_fill_rectangle (f, gc, 0, 0, border, height);
-	  x_fill_rectangle (f, gc, width - border, 0, border, height);
-	  x_fill_rectangle (f, gc, 0, height - border, width, border);
-#undef x_fill_rectangle
+	  fill_background_by_face (f, face, 0, margin, width, border);
+	  fill_background_by_face (f, face, 0, 0, border, height);
+	  fill_background_by_face (f, face, width - border, 0, border,
+				   height);
+	  fill_background_by_face (f, face, 0, (height
+						- bottom_margin
+						- border),
+				   width, border);
 	}
       else
 	{
-#define x_clear_area(f, x, y, w, h)  pgtk_clear_area (f, x, y, w, h)
-	  x_clear_area (f, 0, 0, border, height);
-	  x_clear_area (f, 0, margin, width, border);
-	  x_clear_area (f, width - border, 0, border, height);
-	  x_clear_area (f, 0, height - border, width, border);
-#undef x_clear_area
+	  pgtk_clear_area (f, 0, 0, border, height);
+	  pgtk_clear_area (f, 0, margin, width, border);
+	  pgtk_clear_area (f, width - border, 0, border, height);
+	  pgtk_clear_area (f, 0, height - bottom_margin - border,
+			   width, border);
 	}
 
       unblock_input ();
@@ -6685,12 +6688,12 @@ pgtk_display_x_warning (GdkDisplay *display)
   gtk_window_set_title (window, "Warning");
   gtk_window_set_screen (window, screen);
 
-  label = gtk_label_new ("You are trying to run Emacs configured with"
-			  " the \"pure-GTK\" interface under the X Window"
-			  " System.  That configuration is unsupported and"
-			  " will lead to sporadic crashes during transfer of"
-			  " large selection data.  It will also lead to"
-			  " various problems with keyboard input.");
+  label = gtk_label_new ("You are trying to run Emacs configured with\n"
+			  " the \"pure-GTK\" interface under the X Window\n"
+			  " System.  That configuration is unsupported and\n"
+			  " will lead to sporadic crashes during transfer of\n"
+			  " large selection data.  It will also lead to\n"
+			  " various problems with keyboard input.\n");
   gtk_label_set_line_wrap (GTK_LABEL (label), TRUE);
   gtk_container_add (GTK_CONTAINER (content_area), label);
   gtk_widget_show (label);
@@ -6845,8 +6848,7 @@ pgtk_term_init (Lisp_Object display_name, char *resource_name)
 
   Lisp_Object system_name = Fsystem_name ();
   ptrdiff_t nbytes;
-  if (INT_ADD_WRAPV (SBYTES (Vinvocation_name), SBYTES (system_name) + 2,
-		     &nbytes))
+  if (ckd_add (&nbytes, SBYTES (Vinvocation_name), SBYTES (system_name) + 2))
     memory_full (SIZE_MAX);
   dpyinfo->x_id = ++x_display_id;
   dpyinfo->x_id_name = xmalloc (nbytes);

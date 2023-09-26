@@ -65,8 +65,11 @@
 ;;; Compatibility.
 
 (defun widget-event-point (event)
-  "Character position of the end of event if that exists, or nil."
-  (posn-point (event-end event)))
+  "Character position of the end of event if that exists, or nil.
+EVENT can either be a mouse event or a touch screen event."
+  (if (eq (car-safe event) 'touchscreen-begin)
+      (posn-point (cdadr event))
+    (posn-point (event-end event))))
 
 (defun widget-button-release-event-p (event)
   "Non-nil if EVENT is a mouse-button-release event object."
@@ -281,71 +284,79 @@ The user is asked to choose between each NAME from ITEMS.
 If ITEMS has simple item definitions, then this function returns the VALUE of
 the chosen element.  If ITEMS is a keymap, then the return value is the symbol
 in the key vector, as in the argument of `define-key'."
-  (cond ((and (< (length items) widget-menu-max-size)
-	      event (display-popup-menus-p))
-	 ;; Mouse click.
-         (if (keymapp items)
-             ;; Modify the keymap prompt, and then restore the old one, if any.
-             (let ((prompt (keymap-prompt items)))
-               (unwind-protect
-                   (progn
-                     (setq items (delete prompt items))
-                     (push title (cdr items))
-                     ;; Return just the first element of the list of events.
-                     (car (x-popup-menu event items)))
-                 (setq items (delete title items))
-                 (when prompt
-                   (push prompt (cdr items)))))
-	   (x-popup-menu event (list title (cons "" items)))))
-	((or widget-menu-minibuffer-flag
-	     (> (length items) widget-menu-max-shortcuts))
-         (when (keymapp items)
-           (setq items (widget--simplify-menu items)))
-	 ;; Read the choice of name from the minibuffer.
-	 (setq items (cl-remove-if 'stringp items))
-	 (let ((val (completing-read (concat title ": ") items nil t)))
-	   (if (stringp val)
-	       (let ((try (try-completion val items)))
-		 (when (stringp try)
-		   (setq val try))
-		 (cdr (assoc val items))))))
-	(t
-         (when (keymapp items)
-           (setq items (widget--simplify-menu items)))
-	 ;; Construct a menu of the choices
-	 ;; and then use it for prompting for a single character.
-	 (let* ((next-digit ?0)
-		alist choice some-choice-enabled value)
-	   (with-current-buffer (get-buffer-create " widget-choose")
-	     (erase-buffer)
-	     (insert "Available choices:\n\n")
-	     (while items
-	       (setq choice (pop items))
-	       (when (consp choice)
-                 (let* ((name (substitute-command-keys (car choice)))
-                        (function (cdr choice)))
-                   (insert (format "%c = %s\n" next-digit name))
-                   (push (cons next-digit function) alist)
-                   (setq some-choice-enabled t)))
-	       ;; Allocate digits to disabled alternatives
-	       ;; so that the digit of a given alternative never varies.
-	       (setq next-digit (1+ next-digit)))
-	     (insert "\nC-g = Quit")
-	     (goto-char (point-min))
-	     (forward-line))
-	   (or some-choice-enabled
-	       (error "None of the choices is currently meaningful"))
-	   (save-window-excursion
-             ;; Select window to be able to scroll it from minibuffer
-             (with-selected-window
-                 (display-buffer (get-buffer " widget-choose")
-                                 '(display-buffer-in-direction
-                                   (direction . bottom)
-                                   (window-height . fit-window-to-buffer)))
-               (setq value (read-char-choice
-                            (format "%s: " title)
-                            (mapcar #'car alist)))))
-	   (cdr (assoc value alist))))))
+  ;; Apply quote substitution to customize choice menu item text,
+  ;; whether it occurs in a widget buffer or in a popup menu.
+  (let ((items (mapc (lambda (x)
+                       (when (consp x)
+                         (dotimes (i (1- (length x)))
+                           (when (stringp (nth i x))
+                             (setcar (nthcdr i x)
+                                     (substitute-command-keys
+                                      (car (nthcdr i x))))))))
+		     items)))
+    (cond ((and (< (length items) widget-menu-max-size)
+	        event (display-popup-menus-p))
+	   ;; Mouse click.
+           (if (keymapp items)
+               ;; Modify the keymap prompt, and then restore the old one, if any.
+               (let ((prompt (keymap-prompt items)))
+                 (unwind-protect
+                     (progn
+                       (setq items (delete prompt items))
+                       (push title (cdr items))
+                       ;; Return just the first element of the list of events.
+                       (car (x-popup-menu event items)))
+                   (setq items (delete title items))
+                   (when prompt
+                     (push prompt (cdr items)))))
+	     (x-popup-menu event (list title (cons "" items)))))
+	  ((or widget-menu-minibuffer-flag
+	       (> (length items) widget-menu-max-shortcuts))
+           (when (keymapp items)
+             (setq items (widget--simplify-menu items)))
+	   ;; Read the choice of name from the minibuffer.
+	   (setq items (cl-remove-if 'stringp items))
+	   (let ((val (completing-read (concat title ": ") items nil t)))
+	     (if (stringp val)
+	         (let ((try (try-completion val items)))
+		   (when (stringp try)
+		     (setq val try))
+		   (cdr (assoc val items))))))
+	  (t
+           (when (keymapp items)
+             (setq items (widget--simplify-menu items)))
+	   ;; Construct a menu of the choices
+	   ;; and then use it for prompting for a single character.
+	   (let ((next-digit ?0)
+		 alist choice some-choice-enabled value)
+	     (with-current-buffer (get-buffer-create " widget-choose")
+	       (erase-buffer)
+	       (insert "Available choices:\n\n")
+	       (while items
+	         (setq choice (pop items))
+	         (when (consp choice)
+                   (insert (format "%c = %s\n" next-digit (car choice)))
+                   (push (cons next-digit (cdr choice)) alist)
+                   (setq some-choice-enabled t))
+	         ;; Allocate digits to disabled alternatives
+	         ;; so that the digit of a given alternative never varies.
+	         (setq next-digit (1+ next-digit)))
+	       (insert "\nC-g = Quit")
+	       (goto-char (point-min))
+	       (forward-line))
+	     (or some-choice-enabled
+	         (error "None of the choices is currently meaningful"))
+	     (save-window-excursion
+               ;; Select window to be able to scroll it from minibuffer
+               (with-selected-window
+                   (display-buffer (get-buffer " widget-choose")
+                                   '(display-buffer-in-direction
+                                     (direction . bottom)
+                                     (window-height . fit-window-to-buffer)))
+                 (setq value (read-char-choice
+                              (format "%s: " title)
+                              (mapcar #'car alist)))))
+	     (cdr (assoc value alist)))))))
 
 ;;; Widget text specifications.
 ;;
@@ -1017,6 +1028,7 @@ button end points."
     (define-key map [backtab] 'widget-backward)
     (define-key map [down-mouse-2] 'widget-button-click)
     (define-key map [down-mouse-1] 'widget-button-click)
+    (define-key map [touchscreen-begin] 'widget-button-click)
     ;; The following definition needs to avoid using escape sequences that
     ;; might get converted to ^M when building loaddefs.el
     (define-key map [(control ?m)] 'widget-button-press)
@@ -1072,8 +1084,18 @@ Note that such modes will need to require wid-edit.")
   "If non-nil, `widget-button-click' moves point to a button after invoking it.
 If nil, point returns to its original position after invoking a button.")
 
+(defun widget-event-start (event)
+  "Return the start of EVENT.
+If EVENT is not a touchscreen event, simply return its
+`event-start'.  Otherwise, it is a touchscreen event, so return
+the posn of its touchpoint."
+  (if (eq (car event) 'touchscreen-begin)
+      (cdadr event)
+    (event-start event)))
+
 (defun widget-button--check-and-call-button (event button)
   "Call BUTTON if BUTTON is a widget and EVENT is correct for it.
+EVENT can either be a mouse event or a touchscreen-begin event.
 If nothing was called, return non-nil."
   (let* ((oevent event)
          (mouse-1 (memq (event-basic-type event) '(mouse-1 down-mouse-1)))
@@ -1084,49 +1106,58 @@ If nothing was called, return non-nil."
       ;; in a save-excursion so that the click on the button
       ;; doesn't change point.
       (save-selected-window
-        (select-window (posn-window (event-start event)))
+        (select-window (posn-window (widget-event-start event)))
         (save-excursion
-	  (goto-char (posn-point (event-start event)))
+	  (goto-char (posn-point (widget-event-start event)))
 	  (let* ((overlay (widget-get button :button-overlay))
 	         (pressed-face (or (widget-get button :pressed-face)
 				   widget-button-pressed-face))
 	         (face (overlay-get overlay 'face))
 	         (mouse-face (overlay-get overlay 'mouse-face)))
 	    (unwind-protect
-	        ;; Read events, including mouse-movement
-	        ;; events, waiting for a release event.  If we
-	        ;; began with a mouse-1 event and receive a
-	        ;; movement event, that means the user wants
-	        ;; to perform drag-selection, so cancel the
-	        ;; button press and do the default mouse-1
-	        ;; action.  For mouse-2, just highlight/
-	        ;; unhighlight the button the mouse was
-	        ;; initially on when we move over it.
+	        ;; Read events, including mouse-movement events,
+	        ;; waiting for a release event.  If we began with a
+	        ;; mouse-1 event and receive a movement event, that
+	        ;; means the user wants to perform drag-selection, so
+	        ;; cancel the button press and do the default mouse-1
+	        ;; action.  For mouse-2, just highlight/ unhighlight
+	        ;; the button the mouse was initially on when we move
+	        ;; over it.
+                ;;
+                ;; If this function was called in response to a
+                ;; touchscreen event, then wait for a corresponding
+                ;; touchscreen-end event instead.
 	        (save-excursion
 		  (when face            ; avoid changing around image
 		    (overlay-put overlay 'face pressed-face)
 		    (overlay-put overlay 'mouse-face pressed-face))
-		  (unless (widget-apply button :mouse-down-action event)
-		    (let ((track-mouse t))
-		      (while (not (widget-button-release-event-p event))
-                        (setq event (read--potential-mouse-event))
-		        (when (and mouse-1 (mouse-movement-p event))
-			  (push event unread-command-events)
-			  (setq event oevent)
-			  (throw 'button-press-cancelled t))
-		        (unless (or (integerp event)
-				    (memq (car event)
-                                          '(switch-frame select-window))
-				    (eq (car event) 'scroll-bar-movement))
-			  (setq pos (widget-event-point event))
-			  (if (and pos
-				   (eq (get-char-property pos 'button)
-				       button))
-			      (when face
-			        (overlay-put overlay 'face pressed-face)
-			        (overlay-put overlay 'mouse-face pressed-face))
-			    (overlay-put overlay 'face face)
-			    (overlay-put overlay 'mouse-face mouse-face))))))
+                  (if (eq (car event) 'touchscreen-begin)
+                      ;; This a touchscreen event and must be handled
+                      ;; specially through `touch-screen-track-tap'.
+                      (progn
+                        (unless (touch-screen-track-tap event)
+                          (throw 'button-press-cancelled t)))
+                    (unless (widget-apply button :mouse-down-action event)
+                      (let ((track-mouse t))
+                        (while (not (widget-button-release-event-p event))
+                          (setq event (read--potential-mouse-event))
+                          (when (and mouse-1 (mouse-movement-p event))
+                            (push event unread-command-events)
+                            (setq event oevent)
+                            (throw 'button-press-cancelled t))
+                          (unless (or (integerp event)
+                                      (memq (car event)
+                                            '(switch-frame select-window))
+                                      (eq (car event) 'scroll-bar-movement))
+                            (setq pos (widget-event-point event))
+                            (if (and pos
+                                     (eq (get-char-property pos 'button)
+                                         button))
+                                (when face
+                                  (overlay-put overlay 'face pressed-face)
+                                  (overlay-put overlay 'mouse-face pressed-face))
+                              (overlay-put overlay 'face face)
+                              (overlay-put overlay 'mouse-face mouse-face)))))))
 
 		  ;; When mouse is released over the button, run
 		  ;; its action function.
@@ -1148,36 +1179,43 @@ If nothing was called, return non-nil."
   (if (widget-event-point event)
       (let* ((mouse-1 (memq (event-basic-type event) '(mouse-1 down-mouse-1)))
 	     (pos (widget-event-point event))
-	     (start (event-start event))
+	     (start (widget-event-start event))
              (button (get-char-property
 		      pos 'button (and (windowp (posn-window start))
 				       (window-buffer (posn-window start))))))
 
 	(when (or (null button)
                   (widget-button--check-and-call-button event button))
-	  (let ((up t)
+	  (let ((up (not (eq (car event) 'touchscreen-begin)))
                 command)
 	    ;; Mouse click not on a widget button.  Find the global
 	    ;; command to run, and check whether it is bound to an
 	    ;; up event.
-	    (if mouse-1
-		(cond ((setq command	;down event
-			     (lookup-key widget-global-map [down-mouse-1]))
-		       (setq up nil))
-		      ((setq command	;up event
-			     (lookup-key widget-global-map [mouse-1]))))
-	      (cond ((setq command	;down event
-			   (lookup-key widget-global-map [down-mouse-2]))
-		     (setq up nil))
-		    ((setq command	;up event
-			   (lookup-key widget-global-map [mouse-2])))))
+            (cond
+             ((eq (car event) 'touchscreen-begin)
+              (setq command 'touch-screen-handle-touch))
+             (mouse-1 (cond ((setq command	;down event
+                                   (lookup-key widget-global-map [down-mouse-1]))
+                             (setq up nil))
+                            ((setq command	;up event
+                                   (lookup-key widget-global-map [mouse-1])))))
+             (t (cond ((setq command	;down event
+                             (lookup-key widget-global-map [down-mouse-2]))
+                       (setq up nil))
+                      ((setq command	;up event
+                             (lookup-key widget-global-map [mouse-2]))))))
 	    (when up
 	      ;; Don't execute up events twice.
-	      (while (not (widget-button-release-event-p event))
+	      (while (not (and (widget-button-release-event-p event)))
 		(setq event (read--potential-mouse-event))))
 	    (when command
 	      (call-interactively command)))))
     (message "You clicked somewhere weird.")))
+
+;; Make sure `touch-screen-handle-touch' abstains from emulating
+;; down-mouse-1 events for `widget-button-click'.
+
+(put 'widget-button-click 'ignored-mouse-command t)
 
 (defun widget-button-press (pos &optional event)
   "Invoke button at POS."
@@ -2119,7 +2157,8 @@ the earlier input."
 	;; `widget-setup' is called.
 	(overlay (cons (make-marker) (make-marker))))
     (widget-put widget :field-overlay overlay)
-    (insert value)
+    (when value
+      (insert value))
     (and size
 	 (< (length value) size)
 	 (insert-char ?\s (- size (length value))))
@@ -3647,7 +3686,9 @@ match-alternatives: %S"
                            value
                            (widget-get widget :match)
                            (widget-get widget :match-alternatives))
-                          :warning))
+                          :warning)
+                         ;; Make sure we will `read' a string.
+                         (setq value (prin1-to-string value)))
                        (read value)))
 
 (defun widget-restricted-sexp-match (widget value)
@@ -3977,7 +4018,8 @@ current choice is inline."
 		 nil)
 		((= (length args) 1)
 		 (nth 0 args))
-		((and (= (length args) 2)
+                ((and widget-choice-toggle
+                      (= (length args) 2)
 		      (memq old args))
 		 (if (eq old (nth 0 args))
 		     (nth 1 args)
@@ -4038,6 +4080,7 @@ is inline."
   :button-prefix 'widget-push-button-prefix
   :button-suffix 'widget-push-button-suffix
   :format "%{%t%}: %[Toggle%]  %v\n"
+  :match (lambda (_widget value) (booleanp value))
   :on "on (non-nil)"
   :off "off (nil)")
 

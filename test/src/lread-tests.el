@@ -116,8 +116,27 @@
   (should-error (read "#") :type 'invalid-read-syntax))
 
 (ert-deftest lread-char-modifiers ()
-  (should (eq ?\C-\M-é (+ (- ?\M-a ?a) ?\C-é)))
-  (should (eq (- ?\C-ŗ ?ŗ) (- ?\C-é ?é))))
+  (should (equal ?\C-\M-é (+ (- ?\M-a ?a) ?\C-é)))
+  (should (equal (- ?\C-ŗ ?ŗ) (- ?\C-é ?é)))
+  (should (equal ?\C-\C-c #x4000003))
+  (should (equal ?\C-\M-\C-c #xc000003))
+  (should (equal ?\M-\C-\C-c #xc000003))
+  (should (equal ?\C-\C-\M-c #xc000003))
+  (should (equal ?\M-\S-\H-\A-\C-\s-x #xbc00018))
+
+  (should (equal "\s-x" " -x"))
+  (should (equal "\C-x" "\x18"))
+  (should (equal "\^x" "\x18"))
+  (should (equal "\M-x" "\xf8")))
+
+(ert-deftest lread-many-modifiers ()
+  ;; The string literal "\M-\M-...\M-a" should be equivalent to "\M-a",
+  ;; and we should not run out of stack space parsing it.
+  (let* ((n 500000)
+         (s (concat "\""
+                    (apply #'concat (make-list n "\\M-"))
+                    "a\"")))
+    (should (equal (read-from-string s) (cons "\M-a" (+ (* n 3) 3))))))
 
 (ert-deftest lread-record-1 ()
   (should (equal '(#s(foo) #s(foo))
@@ -137,11 +156,13 @@ literals (Bug#20852)."
     (write-region "?) ?( ?; ?\" ?[ ?]" nil file-name)
     (should (equal (load file-name nil :nomessage :nosuffix) t))
     (should (equal (lread-tests--last-message)
-                   (concat (format-message "Loading `%s': " file-name)
-                           "unescaped character literals "
-                           "`?\"', `?(', `?)', `?;', `?[', `?]' detected, "
-                           "`?\\\"', `?\\(', `?\\)', `?\\;', `?\\[', `?\\]' "
-                           "expected!")))))
+                   (format-message
+                    (concat "Loading `%s': "
+                            "unescaped character literals "
+                            "`?\"', `?(', `?)', `?;', `?[', `?]' detected, "
+                            "`?\\\"', `?\\(', `?\\)', `?\\;', `?\\[', `?\\]' "
+                            "expected!")
+                    file-name)))))
 
 (ert-deftest lread-test-bug26837 ()
   "Test for https://debbugs.gnu.org/26837 ."

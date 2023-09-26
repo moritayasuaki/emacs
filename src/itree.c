@@ -817,14 +817,13 @@ itree_remove_fix (struct itree_tree *tree,
 	{
 	  struct itree_node *other = parent->right;
 
-	  if (null_safe_is_red (other)) /* case 1.a */
+	  if (other->red) /* case 1.a */
 	    {
 	      other->red = false;
 	      parent->red = true;
 	      itree_rotate_left (tree, parent);
 	      other = parent->right;
 	    }
-	  eassume (other != NULL);
 
 	  if (null_safe_is_black (other->left) /* 2.a */
 	      && null_safe_is_black (other->right))
@@ -855,14 +854,13 @@ itree_remove_fix (struct itree_tree *tree,
 	{
 	  struct itree_node *other = parent->left;
 
-	  if (null_safe_is_red (other)) /* 1.b */
+	  if (other->red) /* 1.b */
 	    {
 	      other->red = false;
 	      parent->red = true;
 	      itree_rotate_right (tree, parent);
 	      other = parent->left;
 	    }
-	  eassume (other != NULL);
 
 	  if (null_safe_is_black (other->right) /* 2.b */
 	      && null_safe_is_black (other->left))
@@ -1376,7 +1374,7 @@ itree_iterator_first_node (struct itree_tree *tree,
   return node;
 }
 
-/* Start a iterator enumerating all intervals in [BEGIN,END) in the
+/* Start an iterator enumerating all intervals in [BEGIN,END) in the
    given ORDER.  */
 
 struct itree_iterator *

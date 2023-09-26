@@ -623,7 +623,7 @@ A non-nil INTERACTIVE argument means to run the `post-self-insert-hook'."
          (beforepos (point))
          (last-command-event ?\n)
          ;; Don't auto-fill if we have a prefix argument.
-         (auto-fill-function (if arg nil auto-fill-function))
+         (inhibit-auto-fill (or inhibit-auto-fill arg))
          (arg (prefix-numeric-value arg))
          (procsym (make-symbol "newline-postproc")) ;(bug#46326)
          (postproc
@@ -1762,6 +1762,7 @@ not at the start of a line.
 
 When IGNORE-INVISIBLE-LINES is non-nil, invisible lines are not
 included in the count."
+  (declare (side-effect-free t))
   (save-excursion
     (save-restriction
       (narrow-to-region start end)
@@ -2719,7 +2720,16 @@ function as needed."
        (let ((doc (car body)))
 	 (when (funcall docstring-p doc)
            doc)))
-      (_ (signal 'invalid-function (list function))))))
+      ((pred symbolp)
+       (let ((f (indirect-function function)))
+         (if f (function-documentation f)
+           (signal 'void-function (list function)))))
+      (`(macro . ,f) (function-documentation f))
+      (_
+       (let ((doc (internal-subr-documentation function)))
+         (if (eq t doc)
+             (signal 'invalid-function (list function))
+           doc))))))
 
 (cl-defmethod function-documentation ((function accessor))
   (oclosure--accessor-docstring function)) ;; FIXME: η-reduce!
@@ -2739,7 +2749,8 @@ instead."
   nil)
 
 (cl-defmethod oclosure-interactive-form ((f cconv--interactive-helper))
-  `(interactive (funcall ',(cconv--interactive-helper--if f))))
+  (let ((if (cconv--interactive-helper--if f)))
+    `(interactive ,(if (functionp if) `(funcall ',if) if))))
 
 (defun command-execute (cmd &optional record-flag keys special)
   ;; BEWARE: Called directly from the C code.
@@ -3862,16 +3873,14 @@ whether (MARKER . ADJUSTMENT) undo elements are in the region,
 because markers can be arbitrarily relocated.  Instead, pass the
 marker adjustment's corresponding (TEXT . POS) element."
   (cond ((integerp undo-elt)
-	 (and (>= undo-elt start)
-	      (<= undo-elt end)))
+         (<= start undo-elt end))
 	((eq undo-elt nil)
 	 t)
 	((atom undo-elt)
 	 nil)
 	((stringp (car undo-elt))
 	 ;; (TEXT . POSITION)
-	 (and (>= (abs (cdr undo-elt)) start)
-	      (<= (abs (cdr undo-elt)) end)))
+	 (<= start (abs (cdr undo-elt)) end))
 	((and (consp undo-elt) (markerp (car undo-elt)))
 	 ;; (MARKER . ADJUSTMENT)
          (<= start (car undo-elt) end))
@@ -4086,10 +4095,11 @@ default values.")
   "Amalgamate undo if necessary.
 This function can be called before an amalgamating command.  It
 removes the previous `undo-boundary' if a series of such calls
-have been made.  By default `self-insert-command' and
-`delete-char' are the only amalgamating commands, although this
-function could be called by any command wishing to have this
-behavior."
+have been made.  `self-insert-command' and `delete-char' are the
+most common amalgamating commands, although this function can be
+called by any command which desires this behavior.
+`analyze-text-conversion' (which see) is also an amalgamating
+command in most circumstances."
   (let ((last-amalgamating-count
          (undo-auto--last-boundary-amalgamating-number)))
     (setq undo-auto--this-command-amalgamating t)
@@ -4725,7 +4735,7 @@ impose the use of a shell (with its need to quote arguments)."
                                       (when (buffer-live-p buf)
                                         (remove-function (process-filter proc)
                                                          nonce)
-                                        (display-buffer buf))))
+                                        (display-buffer buf '(nil (allow-no-window . t))))))
                                   `((name . ,nonce)))))))
 	  ;; Otherwise, command is executed synchronously.
 	  (shell-command-on-region (point) (point) command
@@ -4748,6 +4758,30 @@ Also see the `async-shell-command-buffer' variable."
              (format "A command is running in the default buffer.  %s? "
                      action))
       (user-error "Shell command in progress"))))
+
+(defun file-user-uid ()
+  "Return the connection-local effective uid.
+This is similar to `user-uid', but may invoke a file name handler
+based on `default-directory'.  See Info node `(elisp)Magic File
+Names'.
+
+If a file name handler is unable to retrieve the effective uid,
+this function will instead return -1."
+  (if-let ((handler (find-file-name-handler default-directory 'file-user-uid)))
+      (funcall handler 'file-user-uid)
+    (user-uid)))
+
+(defun file-group-gid ()
+  "Return the connection-local effective gid.
+This is similar to `group-gid', but may invoke a file name handler
+based on `default-directory'.  See Info node `(elisp)Magic File
+Names'.
+
+If a file name handler is unable to retrieve the effective gid,
+this function will instead return -1."
+  (if-let ((handler (find-file-name-handler default-directory 'file-group-gid)))
+      (funcall handler 'file-group-gid)
+    (group-gid)))
 
 (defun max-mini-window-lines (&optional frame)
   "Compute maximum number of lines for echo area in FRAME.
@@ -6538,7 +6572,7 @@ If the Unicode tables are not yet available, e.g. during bootstrap,
 then gives correct answers only for ASCII characters."
   (cond ((unicode-property-table-internal 'lowercase)
          (characterp (get-char-code-property char 'lowercase)))
-        ((and (>= char ?A) (<= char ?Z)))))
+        ((<= ?A char ?Z))))
 
 (defun zap-to-char (arg char &optional interactive)
   "Kill up to and including ARGth occurrence of CHAR.
@@ -6848,6 +6882,7 @@ is active, and returns an integer or nil in the usual way.
 
 If you are using this in an editing command, you are most likely making
 a mistake; see the documentation of `set-mark'."
+  (declare (side-effect-free t))
   (if (or force (not transient-mark-mode) mark-active mark-even-if-inactive)
       (marker-position (mark-marker))
     (signal 'mark-inactive nil)))
@@ -8561,6 +8596,45 @@ are interchanged."
   (interactive "*p")
   (transpose-subr 'forward-word arg))
 
+(defun transpose-sexps-default-function (arg)
+  "Default method to locate a pair of points for transpose-sexps."
+  ;; Here we should try to simulate the behavior of
+  ;; (cons (progn (forward-sexp x) (point))
+  ;;       (progn (forward-sexp (- x)) (point)))
+  ;; Except that we don't want to rely on the second forward-sexp
+  ;; putting us back to where we want to be, since forward-sexp-function
+  ;; might do funny things like infix-precedence.
+  (if (if (> arg 0)
+	  (looking-at "\\sw\\|\\s_")
+	(and (not (bobp))
+	     (save-excursion
+               (forward-char -1)
+               (looking-at "\\sw\\|\\s_"))))
+      ;; Jumping over a symbol.  We might be inside it, mind you.
+      (progn (funcall (if (> arg 0)
+			  #'skip-syntax-backward #'skip-syntax-forward)
+		      "w_")
+	     (cons (save-excursion (forward-sexp arg) (point)) (point)))
+    ;; Otherwise, we're between sexps.  Take a step back before jumping
+    ;; to make sure we'll obey the same precedence no matter which
+    ;; direction we're going.
+    (funcall (if (> arg 0) #'skip-syntax-backward #'skip-syntax-forward)
+             " .")
+    (cons (save-excursion (forward-sexp arg) (point))
+	  (progn (while (or (forward-comment (if (> arg 0) 1 -1))
+			    (not (zerop (funcall (if (> arg 0)
+						     #'skip-syntax-forward
+						   #'skip-syntax-backward)
+						 ".")))))
+		 (point)))))
+
+(defvar transpose-sexps-function #'transpose-sexps-default-function
+  "If non-nil, `transpose-sexps' delegates to this function.
+
+This function takes one argument ARG, a number.  Its expected
+return value is a position pair, which is a cons (BEG . END),
+where BEG and END are buffer positions.")
+
 (defun transpose-sexps (arg &optional interactive)
   "Like \\[transpose-chars] (`transpose-chars'), but applies to sexps.
 Unlike `transpose-words', point must be between the two sexps and not
@@ -8576,38 +8650,7 @@ report errors as appropriate for this kind of usage."
       (condition-case nil
           (transpose-sexps arg nil)
         (scan-error (user-error "Not between two complete sexps")))
-    (transpose-subr
-     (lambda (arg)
-       ;; Here we should try to simulate the behavior of
-       ;; (cons (progn (forward-sexp x) (point))
-       ;;       (progn (forward-sexp (- x)) (point)))
-       ;; Except that we don't want to rely on the second forward-sexp
-       ;; putting us back to where we want to be, since forward-sexp-function
-       ;; might do funny things like infix-precedence.
-       (if (if (> arg 0)
-	       (looking-at "\\sw\\|\\s_")
-	     (and (not (bobp))
-		  (save-excursion
-                    (forward-char -1)
-                    (looking-at "\\sw\\|\\s_"))))
-	   ;; Jumping over a symbol.  We might be inside it, mind you.
-	   (progn (funcall (if (> arg 0)
-			       'skip-syntax-backward 'skip-syntax-forward)
-			   "w_")
-		  (cons (save-excursion (forward-sexp arg) (point)) (point)))
-         ;; Otherwise, we're between sexps.  Take a step back before jumping
-         ;; to make sure we'll obey the same precedence no matter which
-         ;; direction we're going.
-         (funcall (if (> arg 0) 'skip-syntax-backward 'skip-syntax-forward)
-                  " .")
-         (cons (save-excursion (forward-sexp arg) (point))
-	       (progn (while (or (forward-comment (if (> arg 0) 1 -1))
-			         (not (zerop (funcall (if (> arg 0)
-							  'skip-syntax-forward
-						        'skip-syntax-backward)
-						      ".")))))
-		      (point)))))
-     arg 'special)))
+    (transpose-subr transpose-sexps-function arg 'special)))
 
 (defun transpose-lines (arg)
   "Exchange current line and previous line, leaving point after both.
@@ -8632,13 +8675,15 @@ With argument 0, interchanges line point is in with line mark is in."
 ;; FIXME document SPECIAL.
 (defun transpose-subr (mover arg &optional special)
   "Subroutine to do the work of transposing objects.
-Works for lines, sentences, paragraphs, etc.  MOVER is a function that
-moves forward by units of the given object (e.g. `forward-sentence',
-`forward-paragraph').  If ARG is zero, exchanges the current object
-with the one containing mark.  If ARG is an integer, moves the
-current object past ARG following (if ARG is positive) or
-preceding (if ARG is negative) objects, leaving point after the
-current object."
+Works for lines, sentences, paragraphs, etc.  MOVER is a function
+that moves forward by units of the given
+object (e.g. `forward-sentence', `forward-paragraph'), or a
+function calculating a cons of buffer positions.
+
+  If ARG is zero, exchanges the current object with the one
+containing mark.  If ARG is an integer, moves the current object
+past ARG following (if ARG is positive) or preceding (if ARG is
+negative) objects, leaving point after the current object."
   (let ((aux (if special mover
 	       (lambda (x)
 		 (cons (progn (funcall mover x) (point))
@@ -8665,6 +8710,8 @@ current object."
       (goto-char (+ (car pos2) (- (cdr pos1) (car pos1))))))))
 
 (defun transpose-subr-1 (pos1 pos2)
+  (unless (and pos1 pos2)
+    (error "Don't have two things to transpose"))
   (when (> (car pos1) (cdr pos1)) (setq pos1 (cons (cdr pos1) (car pos1))))
   (when (> (car pos2) (cdr pos2)) (setq pos2 (cons (cdr pos2) (car pos2))))
   (when (> (car pos1) (car pos2))
@@ -8931,11 +8978,15 @@ unless optional argument SOFT is non-nil."
        ;; If we're not inside a comment, just try to indent.
        (t (indent-according-to-mode))))))
 
+(defvar inhibit-auto-fill nil
+  "Non-nil means to do as if `auto-fill-mode' was disabled.")
+
 (defun internal-auto-fill ()
   "The function called by `self-insert-command' to perform auto-filling."
-  (when (or (not comment-start)
-            (not comment-auto-fill-only-comments)
-            (nth 4 (syntax-ppss)))
+  (unless (or inhibit-auto-fill
+              (and comment-start
+                   comment-auto-fill-only-comments
+                   (not (nth 4 (syntax-ppss)))))
     (funcall auto-fill-function)))
 
 (defvar normal-auto-fill-function 'do-auto-fill
@@ -9120,6 +9171,14 @@ presented."
   "Toggle buffer size display in the mode line (Size Indication mode)."
   :global t :group 'mode-line)
 
+(defcustom remote-file-name-inhibit-auto-save nil
+  "When nil, `auto-save-mode' will auto-save remote files.
+Any other value means that it will not."
+  :group 'auto-save
+  :group 'tramp
+  :type 'boolean
+  :version "30.1")
+
 (define-minor-mode auto-save-mode
   "Toggle auto-saving in the current buffer (Auto Save mode).
 
@@ -9142,6 +9201,9 @@ For more details, see Info node `(emacs) Auto Save'."
                  (setq buffer-auto-save-file-name
                        (cond
                         ((null val) nil)
+                        ((and buffer-file-name remote-file-name-inhibit-auto-save
+                              (file-remote-p buffer-file-name))
+                         nil)
                         ((and buffer-file-name auto-save-visited-file-name
                               (not buffer-read-only))
                          buffer-file-name)
@@ -9211,6 +9273,21 @@ If nil, search stops at the beginning of the accessible portion of the buffer."
 More precisely, when looking for the matching parenthesis,
 it skips the contents of comments that end before point."
   :type 'boolean
+  :group 'paren-blinking)
+
+(defcustom blink-matching-paren-highlight-offscreen nil
+  "If non-nil, highlight matched off-screen open paren in the echo area.
+This highlighting uses the `blink-matching-paren-offscreen' face."
+  :type 'boolean
+  :version "30.1"
+  :group 'paren-blinking)
+
+(defface blink-matching-paren-offscreen
+  '((t :foreground "green"))
+  "Face for showing in the echo area matched open paren that is off-screen.
+This face is used only when `blink-matching-paren-highlight-offscreen'
+is non-nil."
+  :version "30.1"
   :group 'paren-blinking)
 
 (defun blink-matching-check-mismatch (start end)
@@ -9310,47 +9387,78 @@ The function should return non-nil if the two tokens do not match.")
                  (delete-overlay blink-matching--overlay)))))
        ((not show-paren-context-when-offscreen)
         (minibuffer-message
-         "Matches %s"
-         (substring-no-properties
-          (blink-paren-open-paren-line-string blinkpos))))))))
+         "%s%s"
+         (propertize "Matches " 'face 'shadow)
+         (blink-paren-open-paren-line-string blinkpos)))))))
 
 (defun blink-paren-open-paren-line-string (pos)
-  "Return the line string that contains the openparen at POS."
+  "Return the line string that contains the openparen at POS.
+Remove the line string's properties but give the openparen a distinct
+face if `blink-matching-paren-highlight-offscreen' is non-nil."
   (save-excursion
     (goto-char pos)
     ;; Capture the regions in terms of (beg . end) conses whose
     ;; buffer-substrings we want to show as a context string.  Ensure
     ;; they are font-locked (bug#59527).
-    (let (regions)
-      ;; Show what precedes the open in its line, if anything.
+    (let (regions
+          openparen-idx)
       (cond
+       ;; Show what precedes the open in its line, if anything.
        ((save-excursion (skip-chars-backward " \t") (not (bolp)))
-        (setq regions (list (cons (line-beginning-position)
-                                  (1+ pos)))))
+        (let ((bol (line-beginning-position)))
+          (setq regions (list (cons bol (1+ pos)))
+                openparen-idx (- pos bol))))
        ;; Show what follows the open in its line, if anything.
        ((save-excursion
           (forward-char 1)
           (skip-chars-forward " \t")
           (not (eolp)))
-        (setq regions (list (cons pos (line-end-position)))))
+        (setq regions (list (cons pos (line-end-position)))
+              openparen-idx 0))
        ;; Otherwise show the previous nonblank line,
        ;; if there is one.
        ((save-excursion (skip-chars-backward "\n \t") (not (bobp)))
-        (setq regions (list (cons (progn
-                                    (skip-chars-backward "\n \t")
-                                    (line-beginning-position))
-                                  (progn (end-of-line)
-                                         (skip-chars-backward " \t")
-                                         (point)))
+        (setq regions (list (cons
+                             (let (bol)
+                               (skip-chars-backward "\n \t")
+                               (setq bol (line-beginning-position)
+                                     openparen-idx (- bol))
+                               bol)
+                             (let (eol)
+                               (end-of-line)
+                               (skip-chars-backward " \t")
+                               (setq eol (point)
+                                     openparen-idx (+ openparen-idx
+                                                      eol
+                                                      ;; (length "...")
+                                                      3))
+                               eol))
                             (cons pos (1+ pos)))))
        ;; There is nothing to show except the char itself.
-       (t (setq regions (list (cons pos (1+ pos))))))
+       (t (setq regions (list (cons pos (1+ pos)))
+                openparen-idx 0)))
       ;; Ensure we've font-locked the context region.
       (font-lock-ensure (caar regions) (cdar (last regions)))
-      (mapconcat (lambda (region)
-                   (buffer-substring (car region) (cdr region)))
-                 regions
-                 "..."))))
+      (let ((line-string
+             (mapconcat
+              (lambda (region)
+                (buffer-substring (car region) (cdr region)))
+              regions
+              "..."))
+            (openparen-next-char-idx (1+ openparen-idx)))
+        (setq line-string (substring-no-properties line-string))
+        (concat
+         (substring line-string
+                    0 openparen-idx)
+         (let ((matched-offscreen-openparen
+                (substring line-string
+                           openparen-idx openparen-next-char-idx)))
+           (if blink-matching-paren-highlight-offscreen
+               (propertize matched-offscreen-openparen
+                           'face 'blink-matching-paren-offscreen)
+             matched-offscreen-openparen))
+         (substring line-string
+                    openparen-next-char-idx))))))
 
 (defvar blink-paren-function 'blink-matching-open
   "Function called, if non-nil, whenever a close parenthesis is inserted.
@@ -9716,6 +9824,9 @@ makes it easier to edit it."
     (define-key map [right] 'next-completion)
     (define-key map [?\t] 'next-completion)
     (define-key map [backtab] 'previous-completion)
+    (define-key map [M-up] 'minibuffer-previous-completion)
+    (define-key map [M-down] 'minibuffer-next-completion)
+    (define-key map "\M-\r" 'minibuffer-choose-completion)
     (define-key map "z" 'kill-current-buffer)
     (define-key map "n" 'next-completion)
     (define-key map "p" 'previous-completion)
@@ -10110,11 +10221,13 @@ Called from `temp-buffer-show-hook'."
       ;; Maybe insert help string.
       (when completion-show-help
 	(goto-char (point-min))
-	(if (display-mouse-p)
-	    (insert "Click on a completion to select it.\n"))
-	(insert (substitute-command-keys
-		 "In this buffer, type \\[choose-completion] to \
-select the completion near point.\n\n"))))))
+        (insert (substitute-command-keys
+	         (if (display-mouse-p)
+	             "Click or type \\[minibuffer-choose-completion] on a completion to select it.\n"
+                   "Type \\[minibuffer-choose-completion] on a completion to select it.\n")))
+        (insert (substitute-command-keys
+		 "Type \\[minibuffer-next-completion] or \\[minibuffer-previous-completion] \
+to move point between completions.\n\n"))))))
 
 (add-hook 'completion-setup-hook #'completion-setup-function)
 
@@ -10182,19 +10295,34 @@ SYMBOL is the name of this modifier, as a symbol.
 LSHIFTBY is the numeric value of this modifier, in keyboard events.
 PREFIX is the string that represents this modifier in an event type symbol."
   (if (numberp event)
-      (cond ((eq symbol 'control)
-	     (if (<= 64 (upcase event) 95)
-		 (- (upcase event) 64)
-	       (logior (ash 1 lshiftby) event)))
-	    ((eq symbol 'shift)
-             ;; FIXME: Should we also apply this "upcase" behavior of shift
-             ;; to non-ascii letters?
-	     (if (and (<= (downcase event) ?z)
-		      (>= (downcase event) ?a))
-		 (upcase event)
-	       (logior (ash 1 lshiftby) event)))
-	    (t
-	     (logior (ash 1 lshiftby) event)))
+      ;; Use the base event to determine how the control and shift
+      ;; modifiers should be applied.
+      (let* ((base-event (event-basic-type event)))
+        (cond ((eq symbol 'control)
+	       (if (<= 64 (upcase base-event) 95)
+                   ;; Apply the control modifier...
+		   (logior (- (upcase base-event) 64)
+                           ;; ... and any additional modifiers
+                           ;; specified in the original event...
+                           (logand event (logior ?\M-\0 ?\C-\0 ?\S-\0
+					         ?\H-\0 ?\s-\0 ?\A-\0))
+                           ;; ... including any shift modifier that
+                           ;; `event-basic-type' may have removed.
+                           (if (<= ?A event ?Z) ?\S-\0 0))
+	         (logior (ash 1 lshiftby) event)))
+	      ((eq symbol 'shift)
+               ;; FIXME: Should we also apply this "upcase" behavior of shift
+               ;; to non-ascii letters?
+	       (if (<= ?a base-event ?z)
+                   ;; Apply the Shift modifier.
+		   (logior (upcase base-event)
+                           ;; ... and any additional modifiers
+                           ;; specified in the original event.
+                           (logand event (logior ?\M-\0 ?\C-\0 ?\S-\0
+					         ?\H-\0 ?\s-\0 ?\A-\0)))
+	         (logior (ash 1 lshiftby) event)))
+	      (t
+	       (logior (ash 1 lshiftby) event))))
     (if (memq symbol (event-modifiers event))
 	event
       (let ((event-type (if (symbolp event) event (car event))))
@@ -10467,7 +10595,7 @@ call `normal-erase-is-backspace-mode' (which see) instead."
        (if (if (eq normal-erase-is-backspace 'maybe)
                (and (not noninteractive)
                     (or (memq system-type '(ms-dos windows-nt))
-			(memq window-system '(w32 ns pgtk haiku))
+			(memq window-system '(w32 ns pgtk haiku android))
                         (and (eq window-system 'x)
                              (fboundp 'x-backspace-delete-keys-p)
                              (x-backspace-delete-keys-p))
@@ -10882,6 +11010,7 @@ If the buffer doesn't exist, create it first."
 
 (defsubst string-empty-p (string)
   "Check whether STRING is empty."
+  (declare (pure t) (side-effect-free t))
   (string= string ""))
 
 (defun read-signal-name ()
@@ -10899,13 +11028,146 @@ If the buffer doesn't exist, create it first."
 
 (defun lax-plist-get (plist prop)
   "Extract a value from a property list, comparing with `equal'."
-  (declare (obsolete plist-get "29.1"))
+  (declare (pure t) (side-effect-free t) (obsolete plist-get "29.1"))
   (plist-get plist prop #'equal))
 
 (defun lax-plist-put (plist prop val)
   "Change value in PLIST of PROP to VAL, comparing with `equal'."
   (declare (obsolete plist-put "29.1"))
   (plist-put plist prop val #'equal))
+
+
+
+;; Text conversion support.  See textconv.c for more details about
+;; what this is.
+
+;; Actually in textconv.c.
+(defvar text-conversion-edits)
+
+;; Actually in elec-pair.el.
+(defvar electric-pair-preserve-balance)
+(declare-function electric-pair-analyze-conversion "elec-pair.el")
+
+;; Actually in emacs-lisp/timer.el.
+(declare-function timer-set-time "emacs-lisp/timer.el")
+
+(defvar-local post-text-conversion-hook nil
+  "Hook run after text is inserted by an input method.
+Each function in this list is run until one returns non-nil.
+When run, `last-command-event' is bound to the last character
+that was inserted by the input method.")
+
+(defun analyze-text-conversion ()
+  "Analyze the results of the previous text conversion event.
+
+For each insertion:
+
+  - Look for the insertion of a string starting or ending with a
+    character inside `auto-fill-chars', and fill the text around
+    it if `auto-fill-mode' is enabled.
+
+  - Look for the insertion of a new line, and cause automatic
+    line breaking of the previous line when `auto-fill-mode' is
+    enabled.
+
+  - Look for the deletion of a single electric pair character,
+    and delete the adjascent pair if
+    `electric-pair-delete-adjacent-pairs'.
+
+  - Run `post-self-insert-functions' for the last character of
+    any inserted text so that modes such as `electric-pair-mode'
+    can work.
+
+  - Run `post-text-conversion-hook' with `last-command-event' set
+    to the last character of any inserted text to finish up.
+
+Finally, amalgamate recent changes to the undo list with previous
+ones, unless a new line has been inserted or auto-fill has taken
+place.  If undo information is being recorded, make sure
+`undo-auto-current-boundary-timer' will run within the next 5
+seconds."
+  (interactive)
+  (let ((any-nonephemeral nil))
+    ;; The list must be processed in reverse.
+    (dolist (edit (reverse text-conversion-edits))
+      ;; Filter out ephemeral edits and deletions after point.  Here, we
+      ;; are only interested in insertions or deletions whose contents
+      ;; can be identified.
+      (when (stringp (nth 3 edit))
+        (with-current-buffer (car edit)
+          (if (not (eq (nth 1 edit) (nth 2 edit)))
+              ;; Process this insertion.  (nth 3 edit) is the text which
+              ;; was inserted.
+              (let* ((inserted (nth 3 edit))
+                     ;; Get the first and last characters.
+                     (start (aref inserted 0))
+                     (end (aref inserted (1- (length inserted))))
+                     ;; Figure out whether or not to auto-fill.
+                     (auto-fill-p (or (aref auto-fill-chars start)
+                                      (aref auto-fill-chars end)))
+                     ;; Figure out whether or not a newline was inserted.
+                     (newline-p (string-search "\n" inserted))
+                     ;; Save the current undo list to figure out
+                     ;; whether or not auto-fill has actually taken
+                     ;; place.
+                     (old-undo-list buffer-undo-list))
+                (save-excursion
+                  (if (and auto-fill-function newline-p)
+                      (progn (goto-char (nth 2 edit))
+                             (previous-logical-line)
+                             (funcall auto-fill-function))
+                    (when (and auto-fill-function auto-fill-p)
+                      (progn (goto-char (nth 2 edit))
+                             (funcall auto-fill-function))))
+                  ;; Record whether or not this edit should result in
+                  ;; an undo boundary being added.
+                  (setq any-nonephemeral
+                        (or any-nonephemeral newline-p
+                            ;; See if auto-fill has taken place by
+                            ;; comparing the current undo list with
+                            ;; the saved head.
+                            (not (eq old-undo-list
+                                     buffer-undo-list)))))
+                (goto-char (nth 2 edit))
+                (let ((last-command-event end))
+                  (unless (run-hook-with-args-until-success
+                           'post-text-conversion-hook)
+                    (run-hooks 'post-self-insert-hook))))
+            ;; Process this deletion before point.  (nth 2 edit) is the
+            ;; text which was deleted.  Input methods typically prefer
+            ;; to edit words instead of deleting characters off their
+            ;; ends, but they seem to always send proper requests for
+            ;; deletion for punctuation.
+            (when (and (boundp 'electric-pair-delete-adjacent-pairs)
+                       (symbol-value 'electric-pair-delete-adjacent-pairs)
+                       ;; Make sure elec-pair is loaded.
+                       (fboundp 'electric-pair-analyze-conversion)
+                       ;; Only do this if only a single edit happened.
+                       text-conversion-edits)
+              (save-excursion
+                (goto-char (nth 2 edit))
+                (electric-pair-analyze-conversion (nth 3 edit))))))))
+    ;; If all edits were ephemeral, make this an amalgamating command.
+    ;; Then, make sure that an undo boundary is placed within the next
+    ;; five seconds.
+    (unless any-nonephemeral
+      (undo-auto-amalgamate)
+      (let ((timer undo-auto-current-boundary-timer))
+        (if timer
+            ;; The timer is already running.  See if it's due to expire
+            ;; within the next five seconds.
+            (let ((time (list (aref timer 1) (aref timer 2)
+                              (aref timer 3))))
+              (unless (<= (time-convert (time-subtract time nil)
+                                        'integer)
+                          5)
+                ;; It's not, so make it run in 5 seconds.
+                (timer-set-time undo-auto-current-boundary-timer
+                                (time-add nil 5))))
+          ;; Otherwise, start it for five seconds from now.
+          (setq undo-auto-current-boundary-timer
+                (run-at-time 5 nil #'undo-auto--boundary-timer)))))))
+
 
 
 (provide 'simple)

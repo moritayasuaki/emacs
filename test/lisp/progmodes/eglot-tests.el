@@ -31,23 +31,20 @@
 ;; Some of these tests rely on the GNU ELPA package company.el and
 ;; yasnippet.el being available.
 
-;; Some of the tests require access to a remote host files.  Since
-;; this could be problematic, a mock-up connection method "mock" is
-;; used.  Emulating a remote connection, it simply calls "sh -i".
-;; Tramp's file name handlers still run, so this test is sufficient
-;; except for connection establishing.
-
-;; If you want to test a real Tramp connection, set
-;; $REMOTE_TEMPORARY_FILE_DIRECTORY to a suitable value in order to
-;; overwrite the default value.  If you want to skip tests accessing a
-;; remote host, set this environment variable to "/dev/null" or
-;; whatever is appropriate on your system.
+;; Some of the tests require access to a remote host files, which is
+;; mocked in the simplest case.  If you want to test a real Tramp
+;; connection, override $REMOTE_TEMPORARY_FILE_DIRECTORY to a suitable
+;; value (FIXME: like what?) in order to overwrite the default value.
+;;
+;; IMPORTANT: Since Eglot is a :core ELPA package, these tests are
+;; supposed to run on Emacsen down to 26.3.  Do not use bleeding-edge
+;; functionality not compatible with that Emacs version.
 
 ;;; Code:
 (require 'eglot)
 (require 'cl-lib)
 (require 'ert)
-(require 'tramp) ; must be prior ert-x
+(require 'tramp)
 (require 'ert-x) ; ert-simulate-command
 (require 'edebug)
 (require 'cc-mode) ; c-mode-hook
@@ -58,73 +55,66 @@
 
 ;;; Helpers
 
+(defun eglot--test-message (format &rest args)
+  "Message out with FORMAT with ARGS."
+  (message "[eglot-tests] %s"
+           (apply #'format format args)))
+
 (defmacro eglot--with-fixture (fixture &rest body)
-  "Setup FIXTURE, call BODY, teardown FIXTURE.
+  "Set up FIXTURE, call BODY, tear down FIXTURE.
 FIXTURE is a list.  Its elements are of the form (FILE . CONTENT)
 to create a readable FILE with CONTENT.  FILE may be a directory
 name and CONTENT another (FILE . CONTENT) list to specify a
-directory hierarchy.  FIXTURE's elements can also be (SYMBOL
-VALUE) meaning SYMBOL should be bound to VALUE during BODY and
-then restored."
+directory hierarchy."
   (declare (indent 1) (debug t))
-  `(eglot--call-with-fixture
-    ,fixture #'(lambda () ,@body)))
+  `(eglot--call-with-fixture ,fixture (lambda () ,@body)))
 
 (defun eglot--make-file-or-dir (ass)
-  (let ((file-or-dir-name (car ass))
+  (let ((file-or-dir-name (expand-file-name (car ass)))
         (content (cdr ass)))
     (cond ((listp content)
            (make-directory file-or-dir-name 'parents)
-           (let ((default-directory (concat default-directory "/" file-or-dir-name)))
+           (let ((default-directory (file-name-as-directory file-or-dir-name)))
              (mapcan #'eglot--make-file-or-dir content)))
           ((stringp content)
-           (with-temp-buffer
-             (insert content)
-             (write-region nil nil file-or-dir-name nil 'nomessage))
-           (list (expand-file-name file-or-dir-name)))
+           (with-temp-file file-or-dir-name
+             (insert content))
+           (list file-or-dir-name))
           (t
            (eglot--error "Expected a string or a directory spec")))))
 
 (defun eglot--call-with-fixture (fixture fn)
   "Helper for `eglot--with-fixture'.  Run FN under FIXTURE."
-  (let* ((fixture-directory (make-nearby-temp-file "eglot--fixture" t))
-         (default-directory fixture-directory)
-         file-specs created-files
-         syms-to-restore
+  (let* ((fixture-directory (make-nearby-temp-file "eglot--fixture-" t))
+         (default-directory (file-name-as-directory fixture-directory))
+         created-files
          new-servers
          test-body-successful-p)
-    (dolist (spec fixture)
-      (cond ((symbolp spec)
-             (push (cons spec (symbol-value spec)) syms-to-restore)
-             (set spec nil))
-            ((symbolp (car spec))
-             (push (cons (car spec) (symbol-value (car spec))) syms-to-restore)
-             (set (car spec) (cadr spec)))
-            ((stringp (car spec)) (push spec file-specs))))
+    (eglot--test-message "[%s]: test start" (ert-test-name (ert-running-test)))
     (unwind-protect
-        (let* ((process-environment
-                (append
-                 `(;; Set XDF_CONFIG_HOME to /dev/null to prevent
-                   ;; user-configuration to have an influence on
-                   ;; language servers. (See github#441)
-                   "XDG_CONFIG_HOME=/dev/null"
-                   ;; ... on the flip-side, a similar technique by
-                   ;; Emacs's test makefiles means that HOME is
-                   ;; spoofed to /nonexistent, or sometimes /tmp.
-                   ;; This breaks some common installations for LSP
-                   ;; servers like pylsp, rust-analyzer making these
-                   ;; tests mostly useless, so we hack around it here
-                   ;; with a great big hack.
-                   ,(format "HOME=%s"
-                            (expand-file-name (format "~%s" (user-login-name)))))
-                 process-environment))
-               (eglot-server-initialized-hook
-                (lambda (server) (push server new-servers))))
-          (setq created-files (mapcan #'eglot--make-file-or-dir file-specs))
+        (let ((process-environment
+               `(;; Set XDG_CONFIG_HOME to /dev/null to prevent
+                 ;; user-configuration influencing language servers
+                 ;; (see github#441).
+                 ,(format "XDG_CONFIG_HOME=%s" null-device)
+                 ;; ... on the flip-side, a similar technique in
+                 ;; Emacs's `test/Makefile' spoofs HOME as
+                 ;; /nonexistent (and as `temporary-file-directory' in
+                 ;; `ert-remote-temporary-file-directory').
+                 ;; This breaks some common installations for LSP
+                 ;; servers like rust-analyzer, making these tests
+                 ;; mostly useless, so we hack around it here with a
+                 ;; great big hack.
+                 ,(format "HOME=%s"
+                          (expand-file-name (format "~%s" (user-login-name))))
+                 ,@process-environment))
+              (eglot-server-initialized-hook
+               (lambda (server) (push server new-servers))))
+          (setq created-files (mapcan #'eglot--make-file-or-dir fixture))
           (prog1 (funcall fn)
             (setq test-body-successful-p t)))
-      (eglot--message
-       "Test body was %s" (if test-body-successful-p "OK" "A FAILURE"))
+      (eglot--test-message "[%s]: %s" (ert-test-name (ert-running-test))
+                           (if test-body-successful-p "OK" "FAILED"))
       (unwind-protect
           (let ((eglot-autoreconnect nil))
             (dolist (server new-servers)
@@ -133,8 +123,7 @@ then restored."
                     (eglot-shutdown
                      server nil 3 (not test-body-successful-p))
                   (error
-                   (eglot--message "Non-critical shutdown error after test: %S"
-                                   oops))))
+                   (eglot--test-message "Non-critical cleanup error: %S" oops))))
               (when (not test-body-successful-p)
                 ;; We want to do this after the sockets have
                 ;; shut down such that any pending data has been
@@ -147,24 +136,21 @@ then restored."
                                           (jsonrpc-events-buffer server)))))
                   (cond (noninteractive
                          (dolist (buffer buffers)
-                           (eglot--message "%s:" (buffer-name buffer))
+                           (eglot--test-message "contents of `%s':" (buffer-name buffer))
                            (princ (with-current-buffer buffer (buffer-string))
                                   'external-debugging-output)))
                         (t
-                         (eglot--message "Preserved for inspection: %s"
-                                         (mapconcat #'buffer-name buffers ", "))))))))
-        (eglot--cleanup-after-test fixture-directory created-files syms-to-restore)))))
+                         (eglot--test-message "Preserved for inspection: %s"
+                                              (mapconcat #'buffer-name buffers ", "))))))))
+        (eglot--cleanup-after-test fixture-directory created-files)))))
 
-(defun eglot--cleanup-after-test (fixture-directory created-files syms-to-restore)
+(defun eglot--cleanup-after-test (fixture-directory created-files)
   (let ((buffers-to-delete
-         (delete nil (mapcar #'find-buffer-visiting created-files))))
-    (eglot--message "Killing %s, wiping %s, restoring %s"
-                    buffers-to-delete
-                    fixture-directory
-                    (mapcar #'car syms-to-restore))
-    (cl-loop for (sym . val) in syms-to-restore
-             do (set sym val))
-    (dolist (buf buffers-to-delete) ;; have to save otherwise will get prompted
+         (delq nil (mapcar #'find-buffer-visiting created-files))))
+    (eglot--test-message "Killing %s, wiping %s"
+                         buffers-to-delete
+                         fixture-directory)
+    (dolist (buf buffers-to-delete) ;; Have to save otherwise will get prompted.
       (with-current-buffer buf (save-buffer) (kill-buffer)))
     (delete-directory fixture-directory 'recursive)
     ;; Delete Tramp buffers if needed.
@@ -249,12 +235,12 @@ then restored."
        (advice-remove #'jsonrpc--log-event ',log-event-ad-sym))))
 
 (cl-defmacro eglot--wait-for ((events-sym &optional (timeout 1) message) args &body body)
-  "Spin until FN match in EVENTS-SYM, flush events after it.
-Pass TIMEOUT to `eglot--with-timeout'."
   (declare (indent 2) (debug (sexp sexp sexp &rest form)))
   `(eglot--with-timeout '(,timeout ,(or message
                                         (format "waiting for:\n%s" (pp-to-string body))))
-     (let ((event
+     (eglot--test-message "waiting for `%s'" (with-output-to-string
+                                               (mapc #'princ ',body)))
+     (let ((events
             (cl-loop thereis (cl-loop for json in ,events-sym
                                       for method = (plist-get json :method)
                                       when (keywordp method)
@@ -268,16 +254,21 @@ Pass TIMEOUT to `eglot--with-timeout'."
                                       collect json into before)
                      for i from 0
                      when (zerop (mod i 5))
-                     ;; do (eglot--message "still struggling to find in %s"
-                     ;;                    ,events-sym)
+                     ;; do (eglot--test-message "still struggling to find in %s"
+                     ;;                         ,events-sym)
                      do
                      ;; `read-event' is essential to have the file
                      ;; watchers come through.
-                     (read-event "[eglot] Waiting a bit..." nil 0.1)
+                     (cond ((fboundp 'flush-standard-output)
+                            (read-event nil nil 0.1) (princ ".")
+                            (flush-standard-output))
+                           (t
+                            (read-event "." nil 0.1)))
                      (accept-process-output nil 0.1))))
-       (setq ,events-sym (cdr event))
-       (eglot--message "Event detected:\n%s"
-                       (pp-to-string (car event))))))
+       (setq ,events-sym (cdr events))
+       (cl-destructuring-bind (&key method id &allow-other-keys) (car events)
+         (eglot--test-message "detected: %s"
+                              (or method (and id (format "id=%s" id))))))))
 
 ;; `rust-mode' is not a part of Emacs, so we define these two shims
 ;; which should be more than enough for testing.
@@ -304,6 +295,13 @@ Pass TIMEOUT to `eglot--with-timeout'."
   (setq last-command-event char)
   (call-interactively (key-binding (vector char))))
 
+(defun eglot--clangd-version ()
+  "Report on the clangd version used in various tests."
+  (let ((version (shell-command-to-string "clangd --version")))
+    (when (string-match "version[[:space:]]+\\([0-9.]*\\)"
+                        version)
+      (match-string 1 version))))
+
 
 ;;; Unit tests
 
@@ -311,8 +309,7 @@ Pass TIMEOUT to `eglot--with-timeout'."
   "Connect to eclipse.jdt.ls server."
   (skip-unless (executable-find "jdtls"))
   (eglot--with-fixture
-      '(("project/src/main/java/foo" . (("Main.java" . "")))
-        ("project/.git/" . nil))
+      '(("project/src/main/java/foo" . (("Main.java" . ""))))
     (with-current-buffer
         (eglot--find-file-noselect "project/src/main/java/foo/Main.java")
       (eglot--sniffing (:server-notifications s-notifs)
@@ -431,7 +428,7 @@ Pass TIMEOUT to `eglot--with-timeout'."
         (eglot--find-file-noselect "diag-project/main.c")
       (eglot--sniffing (:server-notifications s-notifs)
         (eglot--tests-connect)
-        (eglot--wait-for (s-notifs 2)
+        (eglot--wait-for (s-notifs 10)
             (&key _id method &allow-other-keys)
           (string= method "textDocument/publishDiagnostics"))
         (flymake-start)
@@ -441,16 +438,20 @@ Pass TIMEOUT to `eglot--with-timeout'."
 
 (ert-deftest eglot-test-diagnostic-tags-unnecessary-code ()
   "Test rendering of diagnostics tagged \"unnecessary\"."
-  (skip-unless (executable-find "rust-analyzer"))
-  (skip-unless (executable-find "cargo"))
+  (skip-unless (executable-find "clangd"))
+  (skip-unless (version<= "14" (eglot--clangd-version)))
   (eglot--with-fixture
-      '(("diagnostic-tag-project" .
-         (("main.rs" .
-           "fn main() -> () { let test=3; }"))))
+      `(("diag-project" .
+         (("main.cpp" . "int main(){float a = 42.2; return 0;}"))))
     (with-current-buffer
-        (eglot--find-file-noselect "diagnostic-tag-project/main.rs")
-      (let ((eglot-server-programs '((rust-mode . ("rust-analyzer")))))
-        (should (zerop (shell-command "cargo init")))
+        (eglot--find-file-noselect "diag-project/main.cpp")
+      (eglot--make-file-or-dir '(".git"))
+      (eglot--make-file-or-dir
+       `("compile_commands.json" .
+         ,(jsonrpc--json-encode
+           `[(:directory ,default-directory :command "/usr/bin/c++ -Wall -c main.cpp"
+                         :file ,(expand-file-name "main.cpp"))])))
+      (let ((eglot-server-programs '((c++-mode . ("clangd")))))
         (eglot--sniffing (:server-notifications s-notifs)
           (eglot--tests-connect)
           (eglot--wait-for (s-notifs 10)
@@ -462,11 +463,11 @@ Pass TIMEOUT to `eglot--with-timeout'."
           (should (eq 'eglot-diagnostic-tag-unnecessary-face (face-at-point))))))))
 
 (defun eglot--eldoc-on-demand ()
-  ;; Trick Eldoc 1.1.0 into accepting on-demand calls.
+  ;; Trick ElDoc 1.1.0 into accepting on-demand calls.
   (eldoc t))
 
 (defun eglot--tests-force-full-eldoc ()
-  ;; FIXME: This uses some Eldoc implementation defatils.
+  ;; FIXME: This uses some ElDoc implementation details.
   (when (buffer-live-p eldoc--doc-buffer)
     (with-current-buffer eldoc--doc-buffer
       (let ((inhibit-read-only t))
@@ -652,7 +653,7 @@ int main() {
       (should (string-match "^fprintf" (eglot--tests-force-full-eldoc))))))
 
 (ert-deftest eglot-test-multiline-eldoc ()
-  "Test Eldoc documentation from multiple osurces."
+  "Test ElDoc documentation from multiple osurces."
   (skip-unless (executable-find "clangd"))
   (eglot--with-fixture
       `(("project" . (("coiso.c" .
@@ -704,8 +705,8 @@ int main() {
         (should (zerop (shell-command "cargo init")))
         (eglot--sniffing (:server-notifications s-notifs)
           (should (eglot--tests-connect))
-          (eglot--wait-for (s-notifs 10) (&key method &allow-other-keys)
-             (string= method "textDocument/publishDiagnostics")))
+          (eglot--wait-for (s-notifs 20) (&key method &allow-other-keys)
+            (string= method "textDocument/publishDiagnostics")))
         (goto-char (point-max))
         (eglot--simulate-key-event ?.)
         (should (looking-back "^    \\."))))))
@@ -770,33 +771,35 @@ int main() {
             (should (= 4 (length (flymake--project-diagnostics))))))))))
 
 (ert-deftest eglot-test-project-wide-diagnostics-rust-analyzer ()
-  "Test diagnostics through multiple files in a TypeScript LSP."
+  "Test diagnostics through multiple files in rust-analyzer."
   (skip-unless (executable-find "rust-analyzer"))
   (skip-unless (executable-find "cargo"))
+  (skip-unless (executable-find "git"))
   (eglot--with-fixture
       '(("project" .
          (("main.rs" .
-           "fn main() -> () { let test=3; }")
+           "fn main() -> i32 { return 42.2;}")
           ("other-file.rs" .
            "fn foo() -> () { let hi=3; }"))))
-    (eglot--make-file-or-dir '(".git"))
     (let ((eglot-server-programs '((rust-mode . ("rust-analyzer")))))
-      ;; Open other-file, and see diagnostics arrive for main.rs
+      ;; Open other-file.rs, and see diagnostics arrive for main.rs,
+      ;; which we didn't open.
       (with-current-buffer (eglot--find-file-noselect "project/other-file.rs")
+        (should (zerop (shell-command "git init")))
         (should (zerop (shell-command "cargo init")))
         (eglot--sniffing (:server-notifications s-notifs)
           (eglot--tests-connect)
           (flymake-start)
-          (eglot--wait-for (s-notifs 10)
-              (&key _id method &allow-other-keys)
-            (string= method "textDocument/publishDiagnostics"))
-          (let ((diags (flymake--project-diagnostics)))
-            (should (= 2 (length diags)))
-            ;; Check that we really get a diagnostic from main.rs, and
-            ;; not from other-file.rs
-            (should (string-suffix-p
-                     "main.rs"
-                     (flymake-diagnostic-buffer (car diags))))))))))
+          (eglot--wait-for (s-notifs 20)
+              (&key _id method params &allow-other-keys)
+            (and (string= method "textDocument/publishDiagnostics")
+                 (string-suffix-p "main.rs" (plist-get params :uri))))
+          (let* ((diags (flymake--project-diagnostics)))
+            (should (cl-some (lambda (diag)
+                               (let ((locus (flymake-diagnostic-buffer diag)))
+                                 (and (stringp (flymake-diagnostic-buffer diag))
+                                      (string-suffix-p "main.rs" locus))))
+                             diags))))))))
 
 (ert-deftest eglot-test-json-basic ()
   "Test basic autocompletion in vscode-json-languageserver."
@@ -853,9 +856,9 @@ int main() {
   (skip-unless (executable-find "clangd"))
   (eglot--with-fixture
       `(("project" . (("foo.c" . "int foo() {return 42;}")
-                      ("bar.c" . "int bar() {return 42;}")))
-        (c-mode-hook (eglot-ensure)))
-    (let (server)
+                      ("bar.c" . "int bar() {return 42;}"))))
+    (let ((c-mode-hook '(eglot-ensure))
+          server)
       ;; need `ert-simulate-command' because `eglot-ensure'
       ;; relies on `post-command-hook'.
       (with-current-buffer
@@ -1039,7 +1042,8 @@ int main() {
 (cl-defmacro eglot--guessing-contact ((interactive-sym
                                        prompt-args-sym
                                        guessed-class-sym guessed-contact-sym
-                                       &optional guessed-lang-id-sym)
+                                       &optional guessed-major-modes-sym
+                                       guessed-lang-ids-sym)
                                       &body body)
   "Guess LSP contact with `eglot--guessing-contact', evaluate BODY.
 
@@ -1049,10 +1053,10 @@ BODY is evaluated twice, with INTERACTIVE bound to the boolean passed to
 If the user would have been prompted, PROMPT-ARGS-SYM is bound to
 the list of arguments that would have been passed to
 `read-shell-command', else nil.  GUESSED-CLASS-SYM,
-GUESSED-CONTACT-SYM and GUESSED-LANG-ID-SYM are bound to the
-useful return values of `eglot--guess-contact'.  Unless the
-server program evaluates to \"a-missing-executable.exe\", this
-macro will assume it exists."
+GUESSED-CONTACT-SYM, GUESSED-LANG-IDS-SYM and
+GUESSED-MAJOR-MODES-SYM are bound to the useful return values of
+`eglot--guess-contact'.  Unless the server program evaluates to
+\"a-missing-executable.exe\", this macro will assume it exists."
   (declare (indent 1) (debug t))
   (let ((i-sym (cl-gensym)))
     `(dolist (,i-sym '(nil t))
@@ -1068,8 +1072,9 @@ macro will assume it exists."
                          `(lambda (&rest args) (setq ,prompt-args-sym args) "")
                        `(lambda (&rest _dummy) ""))))
            (cl-destructuring-bind
-               (_ _ ,guessed-class-sym ,guessed-contact-sym
-                  ,(or guessed-lang-id-sym '_))
+               (,(or guessed-major-modes-sym '_)
+                _ ,guessed-class-sym ,guessed-contact-sym
+                  ,(or guessed-lang-ids-sym '_))
                (eglot--guess-contact ,i-sym)
              ,@body))))))
 
@@ -1164,16 +1169,17 @@ macro will assume it exists."
 (ert-deftest eglot-test-server-programs-guess-lang ()
   (let ((major-mode 'foo-mode))
     (let ((eglot-server-programs '((foo-mode . ("prog-executable")))))
-      (eglot--guessing-contact (_ nil _ _ guessed-lang)
-        (should (equal guessed-lang "foo"))))
+      (eglot--guessing-contact (_ nil _ _ _ guessed-langs)
+        (should (equal guessed-langs '("foo")))))
     (let ((eglot-server-programs '(((foo-mode :language-id "bar")
                                     . ("prog-executable")))))
-      (eglot--guessing-contact (_ nil _ _ guessed-lang)
-        (should (equal guessed-lang "bar"))))
+      (eglot--guessing-contact (_ nil _ _ _ guessed-langs)
+        (should (equal guessed-langs '("bar")))))
     (let ((eglot-server-programs '(((baz-mode (foo-mode :language-id "bar"))
                                     . ("prog-executable")))))
-      (eglot--guessing-contact (_ nil _ _ guessed-lang)
-        (should (equal guessed-lang "bar"))))))
+      (eglot--guessing-contact (_ nil _ _ modes guessed-langs)
+        (should (equal guessed-langs '("bar" "baz")))
+        (should (equal modes '(foo-mode baz-mode)))))))
 
 (defun eglot--glob-match (glob str)
   (funcall (eglot--glob-compile glob t t) str))
@@ -1233,14 +1239,27 @@ macro will assume it exists."
 (defun eglot--call-with-tramp-test (fn)
   ;; Set up a Tramp method that’s just a shell so the remote host is
   ;; really just the local host.
-  (let* ((tramp-remote-path (cons 'tramp-own-remote-path tramp-remote-path))
+  (let* ((tramp-remote-path (cons 'tramp-own-remote-path
+                                  tramp-remote-path))
          (tramp-histfile-override t)
          (tramp-allow-unsafe-temporary-files t)
          (tramp-verbose 1)
-         (temporary-file-directory ert-remote-temporary-file-directory)
+         (temporary-file-directory
+          (or (bound-and-true-p ert-remote-temporary-file-directory)
+              (prog1 (format "/mock::%s" temporary-file-directory)
+                (add-to-list
+                 'tramp-methods
+                 '("mock"
+                   (tramp-login-program "sh")       (tramp-login-args (("-i")))
+                   (tramp-direct-async ("-c"))      (tramp-remote-shell "/bin/sh")
+                   (tramp-remote-shell-args ("-c")) (tramp-connection-timeout 10)))
+                (add-to-list 'tramp-default-host-alist
+                             `("\\`mock\\'" nil ,(system-name)))
+                (when (and noninteractive (not (file-directory-p "~/")))
+                  (setenv "HOME" temporary-file-directory)))))
          (default-directory temporary-file-directory))
     ;; We must check the remote LSP server.  So far, just "clangd" is used.
-    (unless (executable-find "clangd" 'remote)
+    (unless (ignore-errors (executable-find "clangd" 'remote))
       (ert-skip "Remote clangd not found"))
     (funcall fn)))
 
@@ -1257,7 +1276,7 @@ macro will assume it exists."
 (ert-deftest eglot-test-path-to-uri-windows ()
   (skip-unless (eq system-type 'windows-nt))
   (should (string-prefix-p "file:///"
-                             (eglot--path-to-uri "c:/Users/Foo/bar.lisp")))
+                           (eglot--path-to-uri "c:/Users/Foo/bar.lisp")))
   (should (string-suffix-p "c%3A/Users/Foo/bar.lisp"
                            (eglot--path-to-uri "c:/Users/Foo/bar.lisp"))))
 
@@ -1287,8 +1306,9 @@ macro will assume it exists."
         (should (eq (eglot-current-server) server))))))
 
 (provide 'eglot-tests)
-;;; eglot-tests.el ends here
 
 ;; Local Variables:
 ;; checkdoc-force-docstrings-flag: nil
 ;; End:
+
+;;; eglot-tests.el ends here

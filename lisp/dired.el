@@ -495,6 +495,11 @@ to nil: a pipe using `zcat' or `gunzip -c' will be used."
                  (string :tag "Switches"))
   :version "29.1")
 
+(defcustom dired-hide-details-preserved-columns nil
+  "List of columns which are not hidden in `dired-hide-details-mode'."
+  :type '(repeat integer)
+  :version "30.1")
+
 
 ;;; Internal variables
 
@@ -535,7 +540,7 @@ The directory name must be absolute, but need not be fully expanded.")
 
 (put 'dired-actual-switches 'safe-local-variable 'dired-safe-switches-p)
 
-(defvar dired-re-inode-size "[0-9 \t]*[.,0-9]*[BkKMGTPEZY]?[ \t]*"
+(defvar dired-re-inode-size "[0-9 \t]*[.,0-9]*[BkKMGTPEZYRQ]?[ \t]*"
   "Regexp for optional initial inode and file size as made by `ls -i -s'.")
 
 ;; These regexps must be tested at beginning-of-line, but are also
@@ -927,9 +932,9 @@ marked file, return (t FILENAME) instead of (FILENAME)."
 		    (lambda ()
 		      (if ,show-progress (sit-for 0))
 		      (setq results (cons ,body results))))
-		   (if (< ,arg 0)
-		       (nreverse results)
-		     results))
+		   (when (< ,arg 0)
+		     (setq results (nreverse results)))
+		   results)
 	       ;; non-nil, non-integer, non-marked ARG means use current file:
                (list ,body))
 	   (let ((regexp (dired-marker-regexp)) next-position)
@@ -1311,7 +1316,7 @@ The return value is the target column for the file names."
 	 ;; Note that buffer already is in dired-mode, if found.
 	 (new-buffer-p (null buffer)))
     (or buffer
-        (setq buffer (create-file-buffer (directory-file-name dirname))))
+        (setq buffer (create-file-buffer dirname)))
     (set-buffer buffer)
     (if (not new-buffer-p)		; existing buffer ...
 	(cond (switches			; ... but new switches
@@ -1632,6 +1637,7 @@ In other cases, DIR should be a directory name or a directory filename.
 If HDR is non-nil, insert a header line with the directory name."
   (let ((opoint (point))
 	(process-environment (copy-sequence process-environment))
+        (remotep (file-remote-p dir))
 	end)
     (if (and
 	 ;; Don't try to invoke `ls' if we are on DOS/Windows where
@@ -1641,31 +1647,29 @@ If HDR is non-nil, insert a header line with the directory name."
 		   (null ls-lisp-use-insert-directory-program)))
          ;; FIXME: Big ugly hack for Eshell's eshell-ls-use-in-dired.
          (not (bound-and-true-p eshell-ls-use-in-dired))
-	 (or (file-remote-p dir)
+	 (or remotep
              (if (eq dired-use-ls-dired 'unspecified)
 		 ;; Check whether "ls --dired" gives exit code 0, and
 		 ;; save the answer in `dired-use-ls-dired'.
 		 (or (setq dired-use-ls-dired
 			   (eq 0 (call-process insert-directory-program
-                                               nil nil nil "--dired")))
+                                               nil nil nil "--dired" "-N")))
 		     (progn
-		       (message "ls does not support --dired; \
+		       (message "ls does not support --dired -N; \
 see `dired-use-ls-dired' for more details.")
 		       nil))
 	       dired-use-ls-dired)))
-	(setq switches (concat "--dired " switches)))
+        ;; Use -N with --dired, to countermand possible non-default
+        ;; quoting style, in particular via the environment variable
+        ;; QUOTING_STYLE.
+        (unless remotep
+	  (setq switches (concat "--dired -N " switches))))
     ;; Expand directory wildcards and fill file-list.
     (let ((dir-wildcard (insert-directory-wildcard-in-dir-p dir)))
       (cond (dir-wildcard
              (setq switches (concat "-d " switches))
-             ;; We don't know whether the remote ls supports
-             ;; "--dired", so we cannot add it to the `process-file'
-             ;; call for wildcards.
-             (when (file-remote-p dir)
-               (setq switches (string-replace "--dired" "" switches)))
              (let* ((default-directory (car dir-wildcard))
                     (script (format "ls %s %s" switches (cdr dir-wildcard)))
-                    (remotep (file-remote-p dir))
                     (sh (or (and remotep "/bin/sh")
                             (executable-find shell-file-name)
                             (executable-find "sh")))
@@ -1876,6 +1880,9 @@ other marked file as well.  Otherwise, unmark all files."
                                      keymap)
   "Keymap applied to file names when `dired-mouse-drag-files' is enabled.")
 
+(defvar dired-click-to-select-mode)
+(defvar dired-click-to-select-map)
+
 (defun dired-insert-set-properties (beg end)
   "Add various text properties to the lines in the region, from BEG to END."
   (save-excursion
@@ -1888,32 +1895,39 @@ other marked file as well.  Otherwise, unmark all files."
 	      (put-text-property (line-beginning-position)
 				 (1+ (line-end-position))
 				 'invisible 'dired-hide-details-information))
-	  (put-text-property (+ (line-beginning-position) 1) (1- (point))
-			     'invisible 'dired-hide-details-detail)
-          (when (and dired-mouse-drag-files (fboundp 'x-begin-drag))
-            (put-text-property (point)
-	                       (save-excursion
-	                         (dired-move-to-end-of-filename)
-                                 (backward-char)
-	                         (point))
-                               'keymap
-                               dired-mouse-drag-files-map))
-	  (add-text-properties
-	   (point)
-	   (progn
-	     (dired-move-to-end-of-filename)
-	     (point))
-	   `(mouse-face
-	     highlight
-	     dired-filename t
-	     help-echo ,(if (and dired-mouse-drag-files
-                                 (fboundp 'x-begin-drag))
-                            "down-mouse-1: drag this file to another program
+	  (save-excursion
+            (let ((end (1- (point)))
+                  (opoint (goto-char (1+ (pos-bol))))
+                  (i 0))
+              (put-text-property opoint end 'invisible 'dired-hide-details-detail)
+              (while (re-search-forward "[^ ]+" end t)
+                (when (member (cl-incf i) dired-hide-details-preserved-columns)
+                  (put-text-property opoint (point) 'invisible nil))
+                (setq opoint (point)))))
+          (let ((beg (point)) (end (save-excursion
+	                             (dired-move-to-end-of-filename)
+	                             (1- (point)))))
+            (if dired-click-to-select-mode
+                (put-text-property beg end 'keymap
+                                   dired-click-to-select-map)
+              (when (and dired-mouse-drag-files (fboundp 'x-begin-drag))
+                (put-text-property beg end 'keymap
+                                   dired-mouse-drag-files-map)))
+	    (add-text-properties
+	     beg (1+ end)
+	     `(mouse-face
+	       highlight
+	       dired-filename t
+	       help-echo ,(if dired-click-to-select-mode
+                              "mouse-2: mark or unmark this file"
+                            (if (and dired-mouse-drag-files
+                                     (fboundp 'x-begin-drag))
+                                "down-mouse-1: drag this file to another program
 mouse-2: visit this file in other window"
-                          "mouse-2: visit this file in other window")))
-	  (when (< (+ (point) 4) (line-end-position))
-	    (put-text-property (+ (point) 4) (line-end-position)
-			       'invisible 'dired-hide-details-link))))
+                              "mouse-2: visit this file in other window"))))
+	    (when (< (+ end 5) (line-end-position))
+	      (put-text-property (+ end 5) (line-end-position)
+			         'invisible 'dired-hide-details-link)))))
       (forward-line 1))))
 
 (defun dired--make-directory-clickable ()
@@ -2284,7 +2298,9 @@ Do so according to the former subdir alist OLD-SUBDIR-ALIST."
   ": d"     #'epa-dired-do-decrypt
   ": v"     #'epa-dired-do-verify
   ": s"     #'epa-dired-do-sign
-  ": e"     #'epa-dired-do-encrypt)
+  ": e"     #'epa-dired-do-encrypt
+  ;; Click-to-select.
+  "<touchscreen-hold>" #'dired-enable-click-to-select-mode)
 
 (put 'dired-find-file :advertised-binding (kbd "RET"))
 
@@ -3697,6 +3713,11 @@ non-empty directories is allowed."
       (or nomessage
 	  (message "(No deletions requested)")))))
 
+(defun dired-post-do-command ()
+  "Disable `dired-click-to-select-mode' after an operation."
+  (when dired-click-to-select-mode
+    (dired-click-to-select-mode -1)))
+
 (defun dired-do-delete (&optional arg)
   "Delete all marked (or next ARG) files.
 `dired-recursive-deletes' controls whether deletion of
@@ -3714,7 +3735,8 @@ non-empty directories is allowed."
                                     m))
                             arg))
      arg t)
-    (dolist (m markers) (set-marker m nil))))
+    (dolist (m markers) (set-marker m nil)))
+  (dired-post-do-command))
 
 (defvar dired-deletion-confirmer 'yes-or-no-p) ; or y-or-n-p?
 
@@ -4934,6 +4956,97 @@ Interactively with prefix argument, read FILE-NAME."
   "In Dired, visit file in EWW."
   (interactive nil dired-mode)
   (eww-open-file (dired-get-file-for-visit)))
+
+
+;;; Click-To-Select mode
+
+(defvar dired-click-to-select-map (make-sparse-keymap)
+  "Keymap placed on files under `dired-click-to-select' mode.")
+
+(define-key dired-click-to-select-map [mouse-2]
+            #'dired-mark-for-click)
+
+(defun dired-mark-for-click (event)
+  "Mark or unmark the file underneath the mouse click at EVENT.
+See `dired-click-to-select-mode' for more details."
+  (interactive "e")
+  (let ((posn (event-start event))
+        (inhibit-read-only t))
+    (with-selected-window (posn-window posn)
+      (goto-char (posn-point posn))
+      (save-excursion
+        (dired-repeat-over-lines
+         1 (lambda ()
+             (let ((char (char-after)))
+               (when (or (not (looking-at-p dired-re-dot))
+                         (not (equal dired-marker-char dired-del-marker)))
+                 (delete-char 1)
+                 (insert (if (eq char dired-marker-char)
+                             ;; Insert a space to unmark the file if
+                             ;; it's already marked.
+                             ?\s
+                           ;; Otherwise mark the file.
+                           dired-marker-char))))))))))
+
+(defun dired-enable-click-to-select-mode (event)
+  "Enable `dired-click-to-select-mode' and mark the file under EVENT.
+If there is no file under EVENT, call `touch-screen-hold' with
+EVENT instead."
+  (interactive "e")
+  (let* ((posn (event-start event))
+         (window (posn-window posn))
+         (point (posn-point posn)))
+    (if (and window point
+             (get-text-property point 'dired-filename
+                                (window-buffer window)))
+        (progn (beep)
+               (touch-screen-inhibit-drag)
+               (with-selected-window window
+                 (goto-char point)
+                 (save-excursion (dired-mark 1))
+                 (dired-click-to-select-mode 1)))
+      (touch-screen-hold event))))
+
+(define-minor-mode dired-click-to-select-mode
+  "Toggle click-to-select inside this Dired buffer.
+When this minor mode is enabled, using `mouse-2' on a file name
+within a Dired buffer will toggle its mark instead of going to it
+within another window.
+
+Disabling this minor mode will unmark all files within the Dired
+buffer.
+
+`dired-click-to-select-mode' is automatically disabled after any
+Dired operation (command whose name starts with `dired-do')
+completes."
+  :group 'dired
+  :lighter " Click-To-Select"
+  (unless (derived-mode-p 'dired-mode 'wdired-mode)
+    (error "Not a Dired buffer"))
+  (if dired-click-to-select-mode
+      (setq-local tool-bar-map
+                  `(keymap (exit-click-to-select menu-item
+                            "Exit Click To Select Mode"
+                            dired-click-to-select-mode
+                            :help "Exit `dired-click-to-select-mode'."
+                            :image ,(tool-bar--image-expression "close")
+                            :enable t)))
+    ;; Reset the default tool bar.
+    (kill-local-variable 'tool-bar-map)
+    (dired-unmark-all-marks))
+  ;; Repropertize this Dired buffer.
+  (let ((inhibit-read-only t))
+    (remove-text-properties (point-min) (point-max)
+                            '(invisible nil
+                              keymap nil
+                              dired-filename nil
+                              help-echo nil
+                              mouse-face nil))
+    (when dired-make-directory-clickable
+      (dired--make-directory-clickable))
+    (dired-insert-set-properties (point-min) (point-max)))
+  ;; Redisplay the tool bar.
+  (force-mode-line-update))
 
 (provide 'dired)
 

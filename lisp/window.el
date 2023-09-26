@@ -2510,6 +2510,7 @@ have special meanings:
 
 Any other value of ALL-FRAMES means consider all windows on the
 selected frame and no others."
+  (declare (side-effect-free error-free))
   (let ((windows (window-list-1 nil 'nomini all-frames))
         best-window best-time second-best-window second-best-time time)
     (dolist (window windows)
@@ -2588,6 +2589,7 @@ have special meanings:
 
 Any other value of ALL-FRAMES means consider all windows on the
 selected frame and no others."
+  (declare (side-effect-free error-free))
   (let ((best-size 0)
 	best-window size)
     (dolist (window (window-list-1 nil 'nomini all-frames))
@@ -3786,6 +3788,7 @@ frame, rounded if necessary.  PIXELWISE non-nil means to return
 the coordinates in pixels where the values for RIGHT and BOTTOM
 are one more than the actual value of these edges.  Note that if
 ABSOLUTE is non-nil, PIXELWISE is implicitly non-nil too."
+  (declare (side-effect-free t))
   (let* ((window (window-normalize-window window body))
 	 (frame (window-frame window))
 	 (border-width (frame-internal-border-width frame))
@@ -3841,6 +3844,7 @@ ABSOLUTE is non-nil, PIXELWISE is implicitly non-nil too."
   "Return a list of the edge coordinates of WINDOW's body.
 The return value is that of `window-edges' called with argument
 BODY non-nil."
+  (declare (side-effect-free t))
   (window-edges window t))
 (defalias 'window-inside-edges 'window-body-edges)
 
@@ -3848,12 +3852,14 @@ BODY non-nil."
   "Return a list of the edge pixel coordinates of WINDOW.
 The return value is that of `window-edges' called with argument
 PIXELWISE non-nil."
+  (declare (side-effect-free t))
   (window-edges window nil nil t))
 
 (defun window-body-pixel-edges (&optional window)
   "Return a list of the edge pixel coordinates of WINDOW's body.
 The return value is that of `window-edges' called with arguments
 BODY and PIXELWISE non-nil."
+  (declare (side-effect-free t))
   (window-edges window t nil t))
 (defalias 'window-inside-pixel-edges 'window-body-pixel-edges)
 
@@ -3861,12 +3867,14 @@ BODY and PIXELWISE non-nil."
   "Return a list of the edge pixel coordinates of WINDOW.
 The return value is that of `window-edges' called with argument
 ABSOLUTE non-nil."
+  (declare (side-effect-free t))
   (window-edges window nil t t))
 
 (defun window-absolute-body-pixel-edges (&optional window)
   "Return a list of the edge pixel coordinates of WINDOW's text area.
 The return value is that of `window-edges' called with arguments
 BODY and ABSOLUTE non-nil."
+  (declare (side-effect-free t))
   (window-edges window t t t))
 (defalias 'window-inside-absolute-pixel-edges 'window-absolute-body-pixel-edges)
 
@@ -4076,6 +4084,7 @@ with a special meaning are:
 
 Anything else means consider all windows on the selected frame
 and no others."
+  (declare (side-effect-free error-free))
   (let ((base-window (selected-window)))
     (if (and nomini (eq base-window (minibuffer-window)))
 	(setq base-window (next-window base-window)))
@@ -6169,7 +6178,14 @@ value can be also stored on disk and read back in a new session."
       (let* ((horizontal (eq type 'hc))
 	     (total (window-size window horizontal pixelwise))
              (first t)
-             (window-combination-limit (cdr (assq 'combination-limit state)))
+	     ;; Make sure to make a new parent window for a horizontal
+	     ;; or vertical combination embedded in one of the same type
+	     ;; (see Bug#50867 and Bug#64405).
+	     (window-combination-limit
+	      (and (or (eq (cdr (assq 'combination-limit state)) t)
+		       (and horizontal (window-combined-p window t))
+		       (and (not horizontal) (window-combined-p window)))
+		   t))
 	     size new)
 	(dolist (item state)
 	  ;; Find the next child window.  WINDOW always points to the
@@ -6409,7 +6425,10 @@ windows can get as small as `window-safe-min-height' and
 			   head)))
 	 (min-width (cdr (assq
 			  (if pixelwise 'min-pixel-width 'min-weight)
-			  head))))
+			  head)))
+	 ;; Bind the following two variables.  `window--state-put-1' has
+	 ;; to fully control them (see Bug#50867 and Bug#64405).
+	 window-combination-limit window-combination-resize)
     (if (and (not totals)
 	     (or (> min-height (window-size window nil pixelwise))
 		 (> min-width (window-size window t pixelwise)))
@@ -8776,7 +8795,8 @@ another window."
   :group 'windows
   :group 'comint)
 
-(defcustom display-tex-shell-buffer-action '(display-buffer-in-previous-window)
+(defcustom display-tex-shell-buffer-action '(display-buffer-in-previous-window
+                                             (inhibit-same-window . t))
   "`display-buffer' action for displaying TeX shell buffers."
   :type display-buffer--action-custom-type
   :risky t

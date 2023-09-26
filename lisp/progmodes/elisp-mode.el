@@ -267,6 +267,9 @@ Comments in the form will be lost."
       ;; Empty symbol.
       ("##" (0 (unless (nth 8 (syntax-ppss))
                  (string-to-syntax "_"))))
+      ;; Prevent the @ from becoming part of a following symbol.
+      (",@" (0 (unless (nth 8 (syntax-ppss))
+                 (string-to-syntax "'"))))
       ;; Unicode character names.  (The longest name is 88 characters
       ;; long.)
       ("\\?\\\\N{[-A-Za-z0-9 ]\\{,100\\}}"
@@ -961,6 +964,10 @@ namespace but with lower confidence."
                                  cl-defmethod cl-defgeneric)))
             ;; (defun FUNC (... IDENT
             'variable)
+           ((and (eql j 2)
+                 (eq j-head 'defclass))
+            ;; (defclass CLASS (... IDENT
+            'function)
            ((eq j-head 'cond)
             ;; (cond ... (... IDENT
             'variable)

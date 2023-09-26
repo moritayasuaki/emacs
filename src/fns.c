@@ -26,6 +26,7 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #include <intprops.h>
 #include <vla.h>
 #include <errno.h>
+#include <ctype.h>
 
 #include "lisp.h"
 #include "bignum.h"
@@ -439,20 +440,31 @@ If string STR1 is greater, the value is a positive number N;
 }
 
 /* Check whether the platform allows access to unaligned addresses for
-   size_t integers without trapping or undue penalty (a few cycles is OK).
+   size_t integers without trapping or undue penalty (a few cycles is OK),
+   and that a word-sized memcpy can be used to generate such an access.
 
    This whitelist is incomplete but since it is only used to improve
    performance, omitting cases is safe.  */
-#if defined __x86_64__|| defined __amd64__	\
-    || defined __i386__ || defined __i386	\
-    || defined __arm64__ || defined __aarch64__	\
-    || defined __powerpc__ || defined __powerpc	\
-    || defined __ppc__ || defined __ppc		\
-    || defined __s390__ || defined __s390x__
+#if (defined __x86_64__|| defined __amd64__		\
+     || defined __i386__ || defined __i386		\
+     || defined __arm64__ || defined __aarch64__	\
+     || defined __powerpc__ || defined __powerpc	\
+     || defined __ppc__ || defined __ppc		\
+     || defined __s390__ || defined __s390x__)		\
+  && defined __OPTIMIZE__
 #define HAVE_FAST_UNALIGNED_ACCESS 1
 #else
 #define HAVE_FAST_UNALIGNED_ACCESS 0
 #endif
+
+/* Load a word from a possibly unaligned address.  */
+static inline size_t
+load_unaligned_size_t (const void *p)
+{
+  size_t x;
+  memcpy (&x, p, sizeof x);
+  return x;
+}
 
 DEFUN ("string-lessp", Fstring_lessp, Sstring_lessp, 2, 2, 0,
        doc: /* Return non-nil if STRING1 is less than STRING2 in lexicographic order.
@@ -497,11 +509,11 @@ Symbols are also allowed; their print names are used instead.  */)
       if (HAVE_FAST_UNALIGNED_ACCESS)
 	{
 	  /* First compare entire machine words.  */
-	  typedef size_t word_t;
-	  int ws = sizeof (word_t);
-	  const word_t *w1 = (const word_t *) SDATA (string1);
-	  const word_t *w2 = (const word_t *) SDATA (string2);
-	  while (b < nb - ws + 1 && w1[b / ws] == w2[b / ws])
+	  int ws = sizeof (size_t);
+	  const char *w1 = SSDATA (string1);
+	  const char *w2 = SSDATA (string2);
+	  while (b < nb - ws + 1 &&    load_unaligned_size_t (w1 + b)
+		                    == load_unaligned_size_t (w2 + b))
 	    b += ws;
 	}
 
@@ -1956,6 +1968,20 @@ assq_no_quit (Lisp_Object key, Lisp_Object alist)
   return Qnil;
 }
 
+/* Assq but doesn't signal.  Unlike assq_no_quit, this function still
+   detects circular lists; like assq_no_quit, this function does not
+   allow quits and never signals.  If anything goes wrong, it returns
+   Qnil.  */
+Lisp_Object
+assq_no_signal (Lisp_Object key, Lisp_Object alist)
+{
+  Lisp_Object tail = alist;
+  FOR_EACH_TAIL_SAFE (tail)
+    if (CONSP (XCAR (tail)) && EQ (XCAR (XCAR (tail)), key))
+      return XCAR (tail);
+  return Qnil;
+}
+
 DEFUN ("assoc", Fassoc, Sassoc, 2, 3, 0,
        doc: /* Return non-nil if KEY is equal to the car of an element of ALIST.
 The value is actually the first element of ALIST whose car equals KEY.
@@ -2913,8 +2939,7 @@ ARRAY is a vector, string, char-table, or bool-vector.  */)
 	  else
 	    {
 	      ptrdiff_t product;
-	      if (INT_MULTIPLY_WRAPV (size, len, &product)
-		  || product != size_byte)
+	      if (ckd_mul (&product, size, len) || product != size_byte)
 		error ("Attempt to change byte length of a string");
 	      for (idx = 0; idx < size_byte; idx++)
 		*p++ = str[idx % len];
@@ -3178,13 +3203,16 @@ DEFUN ("yes-or-no-p", Fyes_or_no_p, Syes_or_no_p, 1, 1, 0,
 Return t if answer is yes, and nil if the answer is no.
 
 PROMPT is the string to display to ask the question; `yes-or-no-p'
-adds \"(yes or no) \" to it.
+appends `yes-or-no-prompt' (default \"(yes or no) \") to it.  If
+PROMPT is a non-empty string, and it ends with a non-space character,
+a space character will be appended to it.
 
 The user must confirm the answer with RET, and can edit it until it
 has been confirmed.
 
 If the `use-short-answers' variable is non-nil, instead of asking for
-\"yes\" or \"no\", this function will ask for \"y\" or \"n\".
+\"yes\" or \"no\", this function will ask for \"y\" or \"n\" (and
+ignore the value of `yes-or-no-prompt').
 
 If dialog boxes are supported, this function will use a dialog box
 if `use-dialog-box' is non-nil and the last input event was produced
@@ -3214,8 +3242,13 @@ by a mouse, or by some window-system gesture, or via a menu.  */)
   if (use_short_answers)
     return call1 (intern ("y-or-n-p"), prompt);
 
-  AUTO_STRING (yes_or_no, "(yes or no) ");
-  prompt = CALLN (Fconcat, prompt, yes_or_no);
+  {
+    char *s = SSDATA (prompt);
+    ptrdiff_t len = strlen (s);
+    if ((len > 0) && !isspace (s[len - 1]))
+      prompt = CALLN (Fconcat, prompt, build_string (" "));
+  }
+  prompt = CALLN (Fconcat, prompt, Vyes_or_no_prompt);
 
   specpdl_ref count = SPECPDL_INDEX ();
   specbind (Qenable_recursive_minibuffers, Qt);
@@ -3528,6 +3561,10 @@ The data read from the system are decoded using `locale-coding-system'.  */)
   (Lisp_Object item)
 {
   char *str = NULL;
+
+  /* STR is apparently unused on Android.  */
+  ((void) str);
+
 #ifdef HAVE_LANGINFO_CODESET
   if (EQ (item, Qcodeset))
     {
@@ -6281,8 +6318,14 @@ When non-nil, `yes-or-no-p' will use `y-or-n-p' to read the answer.
 We recommend against setting this variable non-nil, because `yes-or-no-p'
 is intended to be used when users are expected not to respond too
 quickly, but to take their time and perhaps think about the answer.
-The same variable also affects the function `read-answer'.  */);
+The same variable also affects the function `read-answer'.  See also
+`yes-or-no-prompt'.  */);
   use_short_answers = false;
+
+  DEFVAR_LISP ("yes-or-no-prompt", Vyes_or_no_prompt,
+    doc: /* String to append when `yes-or-no-p' asks a question.
+For best results this should end in a space.  */);
+  Vyes_or_no_prompt = make_unibyte_string ("(yes or no) ", strlen ("(yes or no) "));
 
   defsubr (&Sidentity);
   defsubr (&Srandom);

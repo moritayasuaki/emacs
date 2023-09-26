@@ -3808,6 +3808,54 @@ Currently there are `js-mode' and `js-ts-mode'."
   ;;(syntax-propertize (point-max))
   )
 
+(defvar js--treesit-sentence-nodes
+  '("import_statement"
+    "debugger_statement"
+    "expression_statement"
+    "if_statement"
+    "switch_statement"
+    "for_statement"
+    "for_in_statement"
+    "while_statement"
+    "do_statement"
+    "try_statement"
+    "with_statement"
+    "break_statement"
+    "continue_statement"
+    "return_statement"
+    "throw_statement"
+    "empty_statement"
+    "labeled_statement"
+    "variable_declaration"
+    "lexical_declaration"
+    "jsx_element"
+    "jsx_self_closing_element")
+  "Nodes that designate sentences in JavaScript.
+See `treesit-sentence-type-regexp' for more information.")
+
+(defvar js--treesit-sexp-nodes
+  '("expression"
+    "pattern"
+    "array"
+    "function"
+    "string"
+    "escape"
+    "template"
+    "regex"
+    "number"
+    "identifier"
+    "this"
+    "super"
+    "true"
+    "false"
+    "null"
+    "undefined"
+    "arguments"
+    "pair"
+    "jsx")
+  "Nodes that designate sexps in JavaScript.
+See `treesit-sexp-type-regexp' for more information.")
+
 ;;;###autoload
 (define-derived-mode js-ts-mode js-base-mode "JavaScript"
   "Major mode for editing JavaScript.
@@ -3824,6 +3872,11 @@ Currently there are `js-mode' and `js-ts-mode'."
     ;; Comment.
     (c-ts-common-comment-setup)
     (setq-local comment-multi-line t)
+
+    (setq-local treesit-text-type-regexp
+                (regexp-opt '("comment"
+                              "template_string")))
+
     ;; Electric-indent.
     (setq-local electric-indent-chars
                 (append "{}():;,<>/" electric-indent-chars)) ;FIXME: js2-mode adds "[]*".
@@ -3843,6 +3896,13 @@ Currently there are `js-mode' and `js-ts-mode'."
                         "function_declaration"
                         "lexical_declaration")))
     (setq-local treesit-defun-name-function #'js--treesit-defun-name)
+
+    (setq-local treesit-sentence-type-regexp
+                (regexp-opt js--treesit-sentence-nodes))
+
+    (setq-local treesit-sexp-type-regexp
+                (regexp-opt js--treesit-sexp-nodes))
+
     ;; Fontification.
     (setq-local treesit-font-lock-settings js--treesit-font-lock-settings)
     (setq-local treesit-font-lock-feature-list
